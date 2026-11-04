@@ -1,0 +1,14 @@
+bin/
+obj/
+data/
+*.user
+.vs/
+# Certyfikaty i baza nigdy do repozytorium
+*.pfx
+*.p12
+*.db
+*.db-wal
+*.db-shm
+# Eksporty zakladek z prywatnymi danymi — nigdy do publicznego repozytorium
+bookmarks_*.html
+zakladki_*.html

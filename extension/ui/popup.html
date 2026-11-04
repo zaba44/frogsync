@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <title>FrogSync</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="popup">
+  <div class="header">
+    <div>
+      <h1>FrogSync</h1>
+      <div class="muted" id="profile"></div>
+    </div>
+  </div>
+
+  <div id="banners"></div>
+
+  <div class="card">
+    <div class="status">
+      <span class="dot idle" id="dot"></span>
+      <span id="state-text">Sprawdzanie…</span>
+    </div>
+    <div class="hint" id="state-hint"></div>
+  </div>
+
+  <div class="card" id="stats">
+    <div class="row"><span class="label">Zakładek w przeglądarce</span><span class="value" id="local-count">—</span></div>
+    <div class="row"><span class="label">Ostatnia synchronizacja</span><span class="value" id="last-sync">—</span></div>
+    <div class="row"><span class="label">Czeka na wysłanie</span><span class="value" id="pending">—</span></div>
+  </div>
+
+  <div class="card" id="conflicts-card" hidden>
+    <h2>Ostatnie konflikty</h2>
+    <div id="conflicts" class="list"></div>
+    <div class="actions"><button id="clear-conflicts">Wyczyść listę</button></div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="sync-now">Synchronizuj teraz</button>
+    <button id="open-options">Ustawienia</button>
+  </div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

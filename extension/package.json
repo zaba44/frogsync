@@ -1,0 +1,20 @@
+{
+  "name": "frogsync-extension",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "Wtyczka FrogSync — Chromium i Firefox z jednego zrodla",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:zip": "node build.mjs --zip",
+    "typecheck": "tsc --noEmit",
+    "test:core": "node build.mjs --test-core",
+    "test": "npm run typecheck && npm run test:core && npm run test:e2e",
+    "test:e2e": "dotnet build ../server -c Release -v quiet && node build.mjs --build-e2e && node .bundle/e2e.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

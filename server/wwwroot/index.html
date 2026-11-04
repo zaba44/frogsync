@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FrogSync — panel</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <script src="theme-init.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="favicon.svg" alt="" width="28" height="28">
+    <span>FrogSync</span>
+  </div>
+  <div class="topbar-right">
+    <div class="theme-switch" role="radiogroup" aria-label="Motyw">
+      <button type="button" role="radio" data-theme-choice="auto">Auto</button>
+      <button type="button" role="radio" data-theme-choice="light">Jasny</button>
+      <button type="button" role="radio" data-theme-choice="dark">Ciemny</button>
+    </div>
+    <button type="button" id="logout" class="ghost" hidden>Wyloguj</button>
+  </div>
+</header>
+
+<main>
+  <div id="notice" class="notice" hidden></div>
+  <button type="button" id="retry-connection" hidden>Odśwież stronę</button>
+
+  <!-- ===== Pierwsza konfiguracja ===== -->
+  <section id="view-setup" class="card narrow" hidden>
+    <h1>Pierwsza konfiguracja</h1>
+    <p class="muted">Kod konfiguracji znajdziesz w logu kontenera (w Portainerze: kontener → Logs).
+      Hasło administratora musi mieć co najmniej 12 znaków.</p>
+    <form id="setup-start">
+      <label>Kod konfiguracji <input name="setupCode" autocomplete="off" required placeholder="ABCD-EFGH"></label>
+      <label>Hasło administratora <input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+      <label>Powtórz hasło <input name="password2" type="password" autocomplete="new-password" minlength="12" required></label>
+      <button type="submit" class="primary">Dalej</button>
+    </form>
+
+    <details>
+      <summary>Mam kopię — przywróć serwer</summary>
+      <form id="setup-restore">
+        <label>Kod konfiguracji <input name="setupCode" autocomplete="off" required placeholder="ABCD-EFGH"></label>
+        <label>Kopia FrogSync <input name="file" type="file" accept=".db" required></label>
+        <button type="submit">Przywróć serwer</button>
+      </form>
+    </details>
+
+    <form id="setup-finish" hidden>
+      <p>Zeskanuj kod w aplikacji uwierzytelniającej (Google Authenticator, Aegis, Bitwarden itp.)
+        i wpisz 6 cyfr, które pokaże.</p>
+      <div id="qr" class="qr"></div>
+      <p class="muted small">Albo wpisz ręcznie: <code id="secret"></code></p>
+      <label>Kod z aplikacji <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>
+      <button type="submit" class="primary">Zakończ konfigurację</button>
+    </form>
+  </section>
+
+  <!-- ===== Logowanie ===== -->
+  <section id="view-login" class="card narrow" hidden>
+    <h1>Logowanie</h1>
+    <form id="login">
+      <label>Hasło <input name="password" type="password" autocomplete="current-password" required></label>
+      <label>Kod z aplikacji <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>
+      <button type="submit" class="primary">Zaloguj</button>
+    </form>
+  </section>
+
+  <!-- ===== Panel ===== -->
+  <section id="view-main" hidden>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Profile</h2>
+        <form id="new-profile" class="inline">
+          <input name="name" placeholder="Nazwa nowego profilu" required maxlength="100">
+          <button type="submit">Dodaj profil</button>
+        </form>
+      </div>
+      <p class="muted small">Profil to jeden zestaw zakładek i strony startowej, np. „Praca” i „Dom”.</p>
+      <div id="profiles" class="list"></div>
+    </div>
+
+    <div class="card">
+      <h2>Urządzenia</h2>
+      <p class="muted small">Każda sparowana przeglądarka. Odwołanie dostępu działa natychmiast.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nazwa</th><th>Profil</th><th>Przeglądarka</th><th>Ostatnio</th><th>Zaległe zmiany</th><th></th></tr></thead>
+          <tbody id="devices"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Certyfikat HTTPS</h2>
+      <div id="cert-info" class="cert-info"></div>
+      <p class="muted small">Wtyczka połączy się z serwerem dopiero z certyfikatem wystawionym przez Twoje CA,
+        któremu ufają przeglądarki. Certyfikat musi mieć w polu SAN nazwę albo adres IP, pod którym otwierasz serwer.
+        Nowy certyfikat działa od razu, bez restartu.</p>
+      <form id="cert-pfx" class="cert-form">
+        <label>Plik PFX / P12 (z kluczem prywatnym) <input name="file" type="file" accept=".pfx,.p12" required></label>
+        <label>Hasło do pliku (puste, jeśli bez hasła) <input name="password" type="password" autocomplete="off"></label>
+        <button type="submit" class="primary">Wgraj PFX</button>
+      </form>
+      <details>
+        <summary>Albo certyfikat i klucz w formacie PEM</summary>
+        <form id="cert-pem" class="cert-form">
+          <label>Certyfikat (.crt / .pem) <input name="cert" type="file" accept=".crt,.pem,.cer" required></label>
+          <label>Klucz prywatny (.key / .pem) <input name="key" type="file" accept=".key,.pem" required></label>
+          <button type="submit" class="primary">Wgraj PEM</button>
+        </form>
+      </details>
+      <div class="actions top-gap"><button type="button" id="cert-reset" class="danger" hidden>Wróć do samopodpisanego</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Kopie zapasowe</h2>
+        <button type="button" id="backup-now">Zrób kopię i pobierz</button>
+      </div>
+      <form id="restore-upload">
+        <label>Przywróć z pliku… <input name="file" type="file" accept=".db" required></label>
+        <button type="submit" class="danger">Przywróć z pliku</button>
+      </form>
+      <p id="backup-warning" class="warn" hidden></p>
+      <div id="backups" class="list compact"></div>
+    </div>
+
+    <div class="card">
+      <h2>Dziennik zdarzeń</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Kiedy</th><th>Zdarzenie</th><th>Kto</th><th>Adres</th><th>Szczegóły</th></tr></thead>
+          <tbody id="audit"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card narrow">
+      <h2>Zmiana hasła</h2>
+      <form id="password">
+        <label>Obecne hasło <input name="current" type="password" autocomplete="current-password" required></label>
+        <label>Nowe hasło (min. 12 znaków) <input name="next" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Kod z aplikacji <input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required></label>
+        <button type="submit">Zmień hasło</button>
+      </form>
+    </div>
+  </section>
+</main>
+
+<dialog id="pairing-dialog">
+  <form method="dialog" class="dialog-body">
+    <h2>Kod parowania</h2>
+    <p>Wpisz go we wtyczce FrogSync w przeglądarce <strong id="pairing-device"></strong>.</p>
+    <div id="pairing-code" class="big-code"></div>
+    <p class="muted">Ważny jeszcze <span id="pairing-left"></span>. Działa jednorazowo.</p>
+    <button value="close" class="primary">Zamknij</button>
+  </form>
+</dialog>
+
+<script src="lib/qrcode-generator-1.4.4.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

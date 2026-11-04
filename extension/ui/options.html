@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <title>FrogSync - ustawienia</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div>
+      <h1>FrogSync - ustawienia</h1>
+      <div class="muted" id="version"></div>
+    </div>
+  </div>
+
+  <div id="message" aria-live="polite"></div>
+
+  <div class="card" id="pair-card">
+    <h2>Połączenie z serwerem</h2>
+    <div class="muted">W panelu FrogSync kliknij „Sparuj przeglądarkę” przy wybranym profilu. Dostaniesz sześciocyfrowy kod ważny 5 minut.</div>
+    <form id="pair-form">
+      <label class="field"><span>Adres serwera</span>
+        <input type="text" id="server-url" placeholder="https://192.168.144.66:18443" required></label>
+      <label class="field"><span>Kod parowania</span>
+        <input type="text" id="pair-code" inputmode="numeric" placeholder="123 456" required></label>
+      <div id="mode-choice" hidden>
+        <div class="muted" id="mode-intro"></div>
+        <label class="check"><input type="radio" name="mode" value="replace" checked>
+          <span><strong>Zastąp kopią z serwera</strong> (zalecane dla nowej przeglądarki)
+            <span class="desc">Zakładki, których nie ma na serwerze, trafią do folderu „Zakładki sprzed FrogSync” w „Innych zakładkach”.
+            Przeciągnij wpis z tego folderu do zwykłego folderu, jeśli chcesz go dodać do wspólnej kolekcji.</span></span></label>
+        <label class="check"><input type="radio" name="mode" value="merge">
+          <span><strong>Scal</strong>
+            <span class="desc">Zakładki tej przeglądarki, których nie ma na serwerze, zostaną dodane do wspólnej kolekcji.</span></span></label>
+      </div>
+      <div class="actions"><button type="submit" class="primary" id="pair-button">Dalej</button></div>
+    </form>
+  </div>
+
+  <div class="card" id="paired-card" hidden>
+    <h2>Połączenie z serwerem</h2>
+    <div class="row"><span class="label">Serwer</span><span class="value mono" id="paired-url"></span></div>
+    <div class="row"><span class="label">Profil</span><span class="value" id="paired-profile"></span></div>
+    <div class="row"><span class="label">To urządzenie</span><span class="value" id="paired-device"></span></div>
+    <div class="actions">
+      <button type="button" class="primary" id="sync-now">Synchronizuj teraz</button>
+      <button type="button" class="danger" id="unpair">Rozłącz</button>
+    </div>
+    <div class="hint">Rozłączenie nie usuwa zakładek z tej przeglądarki ani z serwera.</div>
+  </div>
+
+  <section class="card" aria-labelledby="restore-heading">
+    <h2 id="restore-heading">Przywróć z eksportu</h2>
+    <p class="muted">Wybierz plik HTML wyeksportowany z menedżera zakładek. Zobaczysz jedno podsumowanie przed wprowadzeniem zmian.</p>
+    <form id="restore-form">
+      <label class="field"><span>Plik zakładek</span>
+        <input type="file" id="restore-file" accept=".html,.htm,text/html" required></label>
+      <details id="restore-format">
+        <summary>Format eksportu</summary>
+        <label class="field"><span>Przeglądarka, która utworzyła plik</span>
+          <select id="restore-source">
+            <option value="auto">Rozpoznaj automatycznie</option>
+            <option value="firefox">Firefox</option>
+            <option value="chromium">Opera, Vivaldi, Chrome lub Edge</option>
+          </select>
+        </label>
+        <p class="muted">Wskaż Firefox ręcznie, jeśli w jego pliku brakuje oznaczeń folderów głównych.</p>
+      </details>
+      <div class="actions">
+        <button type="submit" class="primary" id="restore-preview">Pokaż podsumowanie</button>
+      </div>
+    </form>
+    <p id="restore-message" class="hint" role="status" aria-live="polite"></p>
+    <div class="actions">
+      <button type="button" id="restore-resume" hidden>Wznów przez synchronizację</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="points-heading">
+    <h2 id="points-heading">Punkty przywracania</h2>
+    <p class="muted">Kopie zapisane przez FrogSync w tej przeglądarce. Cofnięcie korzysta z tego samego podsumowania co przywracanie z pliku.</p>
+    <div id="restore-points" class="list" aria-live="polite"></div>
+  </section>
+
+  <dialog id="restore-dialog" class="card" aria-labelledby="restore-dialog-title" aria-describedby="restore-summary">
+    <h2 id="restore-dialog-title">Podsumowanie przywracania</h2>
+    <p id="restore-summary"></p>
+    <details id="restore-details">
+      <summary>Szczegóły</summary>
+      <p id="restore-origin"></p>
+      <p class="muted">Podsumowanie liczy wpisy, w tym foldery. FrogSync zapisze punkt przywracania przed zmianami.
+        W sparowanej przeglądarce zatwierdzone zmiany trafią też do wspólnej kolekcji.</p>
+    </details>
+    <div class="actions">
+      <button type="button" class="primary" id="restore-confirm">Przywróć</button>
+      <button type="button" id="restore-cancel">Anuluj</button>
+    </div>
+  </dialog>
+
+  <div class="card">
+    <h2>Synchronizacja automatyczna</h2>
+    <label class="check"><input type="checkbox" id="auto-sync">
+      <span>Sprawdzaj serwer okresowo
+        <span class="desc">Zmiana zakładki i tak wysyła się po kilku sekundach.</span></span></label>
+    <label class="field"><span>Co ile minut (1–60)</span><input type="number" id="poll" min="1" max="60"></label>
+  </div>
+
+  <div class="card">
+    <h2>Czego nie synchronizować</h2>
+    <div class="muted">Wykluczenie zakładki ukrywa ją przed synchronizacją. Samo dodanie reguły nie usuwa jej z innych komputerów.</div>
+    <div id="builtin-rules"></div>
+    <h2 class="top">Własne wykluczenia</h2>
+    <div class="list" id="manual-list"></div>
+    <div class="actions">
+      <input type="text" id="manual-value" placeholder="np. https://intranet.firma.pl/*">
+      <button type="button" id="manual-add">Dodaj wzorzec</button>
+    </div>
+  </div>
+</div>
+<script src="options.js"></script>
+</body>
+</html>

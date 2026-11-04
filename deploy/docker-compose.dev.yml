@@ -1,0 +1,21 @@
+# Wersja DEWELOPERSKA — do testow na Debianie, potem do usuniecia:
+#   docker compose -f deploy/docker-compose.dev.yml down -v
+# Osobna nazwa, port i wolumen, zeby nie dalo sie jej pomylic z wersja docelowa.
+#
+# network_mode: host — serwer widzi prawdziwe adresy klientow. Przy zwyklym
+# mapowaniu portow Docker potrafi podstawiac adres bramy 172.x i filtr
+# "tylko sieci prywatne" przestaje cokolwiek filtrowac.
+services:
+  frogsync-dev:
+    build:
+      context: ..
+    container_name: frogsync-dev
+    network_mode: host
+    environment:
+      FROGSYNC_PORT: "18443"
+    volumes:
+      - frogsync-dev-data:/data
+    restart: "no"
+
+volumes:
+  frogsync-dev-data:
