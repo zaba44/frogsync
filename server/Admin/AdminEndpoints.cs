@@ -104,6 +104,8 @@ public static class AdminEndpoints
 
         var authed = api.MapGroup("").AddEndpointFilter(RequireSession);
 
+        FrogSync.Server.StartPage.StartPageEndpoints.MapAdmin(authed);
+
         authed.MapPost("/logout", async (AdminService admin, HttpContext http) =>
         {
             await admin.LogoutAsync(http.Request.Cookies[Cookie], DeviceEndpoints.Ip(http));

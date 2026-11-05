@@ -971,6 +971,618 @@ try
                 .GetProperty("signedIn").GetBoolean(), "Przegrany dostal sesje.");
         }));
 
+    // Pomocniki etapu 3.2. Bez zaleznosci od prywatnych metod Harness.
+    async Task<HttpResponseMessage> SpSend(
+        HttpClient client,
+        HttpMethod method,
+        string path,
+        object? body = null,
+        byte[]? bytes = null,
+        string? mime = null,
+        string? etag = null,
+        bool csrf = true)
+    {
+        using var request = new HttpRequestMessage(method, path);
+
+        if (csrf && path.StartsWith("/admin/api/", StringComparison.Ordinal))
+            request.Headers.Add("X-FrogSync", "1");
+
+        if (etag is not null)
+            request.Headers.TryAddWithoutValidation("If-None-Match", etag);
+
+        if (bytes is not null)
+        {
+            request.Content = new ByteArrayContent(bytes);
+            request.Content.Headers.ContentType =
+                new MediaTypeHeaderValue(mime ?? "image/png");
+        }
+        else if (body is not null)
+        {
+            request.Content = JsonContent.Create(body);
+        }
+
+        return await client.SendAsync(request);
+    }
+
+    async Task<JsonElement> SpJson(HttpResponseMessage response, int expected = 200)
+    {
+        Expect((int)response.StatusCode == expected,
+            $"Startpage: oczekiwano HTTP {expected}, jest {(int)response.StatusCode}.");
+
+        using var document = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+
+        return document.RootElement.Clone();
+    }
+
+    async Task<JsonElement> SpPut(
+        HttpClient client, string path, object body, int expected = 200)
+    {
+        using var response = await SpSend(client, HttpMethod.Put, path, body);
+        return await SpJson(response, expected);
+    }
+
+    object SpDocument(
+        string folderId,
+        string title = "Sekcja testowa",
+        string url = "https://example.test/search?q=%s") =>
+        new
+        {
+            version = 1,
+            sections = new[] { new { id = "main", folderId, title } },
+            engines = new[]
+            {
+                new
+                {
+                    id = "test",
+                    name = "Test",
+                    url,
+                    color = "#123ABC",
+                    suggest = "none",
+                },
+            },
+        };
+
+    object SpSaveBody(JsonElement stamp, object document) =>
+        new
+        {
+            generation = stamp.GetProperty("generation").GetString(),
+            settingsVersion = stamp.GetProperty("settingsVersion").GetInt64(),
+            configuration = document,
+        };
+
+    string SpLogoPath(string profileId, JsonElement stamp) =>
+        $"/admin/api/profiles/{profileId}/startpage/logo" +
+        $"?generation={Uri.EscapeDataString(stamp.GetProperty("generation").GetString()!)}" +
+        $"&logoVersion={stamp.GetProperty("logoVersion").GetInt64()}";
+
+    var spPath = $"/admin/api/profiles/{deviceA.ProfileId}/startpage";
+    var spPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX2kAAAAASUVORK5CYII=");
+
+    await h.Run("startpage: dokument profilu, odczyt urzadzenia, wersje niezalezne od seq", async () =>
+    {
+        var folder = await h.Create(deviceA, "folder", "Start 3.2", "root:toolbar");
+        var before = await h.Get(h.Admin, spPath);
+        var head = await h.Head(deviceA);
+
+        var saved = await SpPut(h.Admin, spPath,
+            SpSaveBody(before, SpDocument(folder.Id)));
+
+        Expect(saved.GetProperty("profileId").GetString() == deviceA.ProfileId,
+            "Odpowiedz dotyczy innego profilu.");
+        Expect(saved.GetProperty("settingsVersion").GetInt64() ==
+               before.GetProperty("settingsVersion").GetInt64() + 1,
+            "Nie zwiekszono settingsVersion.");
+        Expect(saved.GetProperty("logoVersion").GetInt64() ==
+               before.GetProperty("logoVersion").GetInt64(),
+            "Zapis konfiguracji zmienil wersje logo.");
+
+        var section = saved.GetProperty("configuration").GetProperty("sections")[0];
+
+        Expect(section.GetProperty("available").GetBoolean() &&
+               section.GetProperty("folderTitle").GetString() == folder.Title,
+            "Brak dostepnosci albo nazwy folderu.");
+
+        var downloaded = await h.Get(deviceA.Client, "/api/v1/startpage");
+
+        Expect(downloaded.GetRawText() == saved.GetRawText(),
+            "Urzadzenie dostalo inna konfiguracje niz panel.");
+        Expect(await h.Head(deviceA) == head,
+            "Konfiguracja strony startowej przesunela seq zakladek.");
+    });
+
+    await h.Run("startpage: walidacja folderow, duplikatow, wyszukiwarek i limitow", async () =>
+    {
+        var folder = await h.Create(deviceA, "folder", "Walidacja", "root:toolbar");
+        var bookmark = await h.Create(deviceA, "bookmark", "Nie folder", "root:toolbar");
+        var foreign = await h.Create(deviceOther, "folder", "Inny profil", "root:toolbar");
+        var stamp = await h.Get(h.Admin, spPath);
+
+        var invalid = new List<object>
+        {
+            SpDocument(bookmark.Id),
+            SpDocument(foreign.Id),
+            SpDocument(Id()),
+            SpDocument("root:toolbar"),
+            SpDocument(folder.Id, url: "http://example.test/?q=%s"),
+            SpDocument(folder.Id, url: "https://example.test/search"),
+            SpDocument(folder.Id, url: "https://example.test/?q=%s&again=%s"),
+            SpDocument(folder.Id, url: "https://%s.example.test/search"),
+            SpDocument(folder.Id, url: "https://user:pass@example.test/?q=%s"),
+            new
+            {
+                version = 1,
+                sections = new[]
+                {
+                    new { id = "first", folderId = folder.Id },
+                    new { id = "second", folderId = folder.Id.ToUpperInvariant() },
+                },
+                engines = Array.Empty<object>(),
+            },
+            new
+            {
+                version = 1,
+                sections = Array.Empty<object>(),
+                engines = new[]
+                {
+                    new
+                    {
+                        id = "bad", name = "Bad",
+                        url = "https://example.test/?q=%s",
+                        color = "red", suggest = "none",
+                    },
+                },
+            },
+            new
+            {
+                version = 1,
+                sections = Enumerable.Range(0, 65)
+                    .Select(i => new { id = "s" + i, folderId = Id() }).ToArray(),
+                engines = Array.Empty<object>(),
+            },
+            new
+            {
+                version = 1,
+                sections = Array.Empty<object>(),
+                engines = Enumerable.Range(0, 33).Select(i => new
+                {
+                    id = "e" + i, name = "Engine",
+                    url = "https://example.test/?q=%s",
+                    color = "#123456", suggest = "none",
+                }).ToArray(),
+            },
+            new { version = 2, sections = Array.Empty<object>(), engines = Array.Empty<object>() },
+            new { version = 1, sections = (object?)null, engines = Array.Empty<object>() },
+        };
+
+        foreach (var document in invalid)
+            await SpPut(h.Admin, spPath, SpSaveBody(stamp, document), 400);
+
+        var after = await h.Get(h.Admin, spPath);
+        Expect(after.GetProperty("settingsVersion").GetInt64() ==
+               stamp.GetProperty("settingsVersion").GetInt64(),
+            "Odrzucony dokument zmienil wersje.");
+
+        using var oversized = await SpSend(h.Admin, HttpMethod.Put, spPath,
+            bytes: new byte[64 * 1024 + 1], mime: "application/json");
+        await SpJson(oversized, 413);
+    });
+
+    await h.Run("startpage: rownolegle zapisy jednej wersji daja sukces i 409 z aktualnym dokumentem", async () =>
+    {
+        var folder = await h.Create(deviceA, "folder", "Rownolegle", "root:toolbar");
+        var stamp = await h.Get(h.Admin, spPath);
+        Task<HttpResponseMessage>[] pending;
+
+        await using (var pause = await h.HoldWrites())
+        {
+            pending =
+            [
+                SpSend(h.Admin, HttpMethod.Put, spPath,
+                    SpSaveBody(stamp, SpDocument(folder.Id, "Pierwsza"))),
+                SpSend(h.Admin, HttpMethod.Put, spPath,
+                    SpSaveBody(stamp, SpDocument(folder.Id, "Druga"))),
+            ];
+
+            await Task.Delay(150);
+        }
+
+        var responses = await Task.WhenAll(pending);
+
+        try
+        {
+            Expect(responses.Count(r => (int)r.StatusCode == 200) == 1 &&
+                   responses.Count(r => (int)r.StatusCode == 409) == 1,
+                "Dwa zapisy tej samej wersji nie zostaly rozstrzygniete atomowo.");
+
+            var winner = await SpJson(responses.Single(r => (int)r.StatusCode == 200));
+            var loser = await SpJson(responses.Single(r => (int)r.StatusCode == 409), 409);
+
+            Expect(loser.GetProperty("error").GetString() == "STARTPAGE_CHANGED",
+                "Niepoprawny blad konfliktu.");
+            Expect(loser.GetProperty("current").GetRawText() == winner.GetRawText(),
+                "409 nie zawiera aktualnej konfiguracji.");
+
+            var current = await h.Get(h.Admin, spPath);
+            Expect(current.GetProperty("settingsVersion").GetInt64() ==
+                   stamp.GetProperty("settingsVersion").GetInt64() + 1,
+                "Konflikt zwiekszyl wersje drugi raz.");
+        }
+        finally
+        {
+            foreach (var response in responses)
+                response.Dispose();
+        }
+    });
+
+    await h.Run("startpage: ETag, zmiana nazwy i usuniecie folderu bez utraty sekcji", async () =>
+    {
+        var folder = await h.Create(deviceA, "folder", "Pierwotna nazwa", "root:toolbar");
+        var stamp = await h.Get(h.Admin, spPath);
+
+        await SpPut(h.Admin, spPath, SpSaveBody(stamp, SpDocument(folder.Id)));
+
+        using var first = await SpSend(deviceA.Client, HttpMethod.Get, "/api/v1/startpage");
+        var firstBody = await SpJson(first);
+        var etag = first.Headers.ETag?.ToString();
+        Expect(!string.IsNullOrEmpty(etag), "Brak ETag konfiguracji.");
+
+        using (var cached = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage", etag: "W/" + etag))
+        {
+            Expect((int)cached.StatusCode == 304, "Warunkowy GET nie zwrocil 304.");
+            Expect((await cached.Content.ReadAsByteArrayAsync()).Length == 0,
+                "304 zawiera body.");
+        }
+
+        var renamed = await h.Op(deviceA, new SyncOp
+        {
+            ClientOpId = Id(), Type = "update", NodeId = folder.Id,
+            BaseVersion = folder.Version, Title = "Nowa nazwa",
+        });
+
+        string renamedEtag;
+
+        using (var response = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage", etag: etag))
+        {
+            var body = await SpJson(response);
+            Expect(body.GetProperty("configuration").GetProperty("sections")[0]
+                    .GetProperty("folderTitle").GetString() == "Nowa nazwa",
+                "Nazwa folderu jest nieaktualna.");
+            Expect(body.GetProperty("settingsVersion").GetInt64() ==
+                   firstBody.GetProperty("settingsVersion").GetInt64(),
+                "Zmiana zakladki zmienila settingsVersion.");
+            renamedEtag = response.Headers.ETag!.ToString();
+            Expect(renamedEtag != etag, "ETag nie uwzglednia nazwy folderu.");
+        }
+
+        await h.Op(deviceA, new SyncOp
+        {
+            ClientOpId = Id(), Type = "delete", NodeId = folder.Id,
+            BaseVersion = renamed.Node!.Version,
+            BaseSeq = await h.Head(deviceA),
+        });
+
+        using var deleted = await SpSend(deviceA.Client, HttpMethod.Get,
+            "/api/v1/startpage", etag: renamedEtag);
+        var unavailable = await SpJson(deleted);
+        var sections = unavailable.GetProperty("configuration").GetProperty("sections");
+
+        Expect(sections.GetArrayLength() == 1 &&
+               sections[0].GetProperty("folderId").GetString() == folder.Id &&
+               !sections[0].GetProperty("available").GetBoolean(),
+            "Usuniecie folderu usunelo sekcje albo nie oznaczylo niedostepnosci.");
+
+        var folders = await h.Get(h.Admin,
+            $"/admin/api/profiles/{deviceA.ProfileId}/folders");
+
+        Expect(!folders.GetProperty("folders").EnumerateArray()
+                .Any(f => f.GetProperty("id").GetString() == folder.Id),
+            "Lista folderow zawiera usuniety folder.");
+    });
+
+    await h.Run("startpage: token profilu, sesja admina, CSRF, Origin i CORS ETag", async () =>
+    {
+        await h.Get(h.Anonymous, "/api/v1/startpage", 401);
+        await h.Get(h.Anonymous, "/api/v1/startpage/logo", 401);
+        await h.Get(h.Anonymous, spPath, 401);
+        await h.Get(deviceA.Client, "/api/v1/startpage", 403, origin: "https://evil");
+
+        var own = await h.Get(deviceA.Client,
+            "/api/v1/startpage?profileId=" + deviceOther.ProfileId);
+        Expect(own.GetProperty("profileId").GetString() == deviceA.ProfileId,
+            "Parametr query pozwolil zmienic profil tokenu.");
+
+        var otherConfig = await h.Get(deviceOther.Client, "/api/v1/startpage");
+        Expect(otherConfig.GetProperty("profileId").GetString() == deviceOther.ProfileId &&
+               otherConfig.GetProperty("configuration").GetProperty("sections").GetArrayLength() == 0,
+            "Konfiguracja wyciekla do drugiego profilu.");
+
+        using (var csrf = await SpSend(h.Admin, HttpMethod.Put, spPath,
+                   SpSaveBody(own, new
+                   {
+                       version = 1,
+                       sections = Array.Empty<object>(),
+                       engines = Array.Empty<object>(),
+                   }), csrf: false))
+        {
+            await SpJson(csrf, 403);
+        }
+
+        await h.Get(h.Admin, $"/admin/api/profiles/{Id()}/startpage", 404);
+
+        using var preflightRequest = new HttpRequestMessage(HttpMethod.Options, "/api/v1/startpage");
+        preflightRequest.Headers.Add("Origin", "moz-extension://test-startpage");
+        preflightRequest.Headers.Add("Access-Control-Request-Method", "GET");
+        preflightRequest.Headers.Add("Access-Control-Request-Headers",
+            "authorization, if-none-match");
+
+        using var preflight = await deviceA.Client.SendAsync(preflightRequest);
+        Expect((int)preflight.StatusCode == 204, "Preflight nie przeszedl.");
+        Expect(preflight.Headers.GetValues("Access-Control-Allow-Headers")
+                .Any(v => v.Contains("If-None-Match", StringComparison.OrdinalIgnoreCase)),
+            "CORS nie dopuszcza If-None-Match.");
+        Expect(preflight.Headers.GetValues("Access-Control-Expose-Headers")
+                .Any(v => v.Contains("ETag", StringComparison.OrdinalIgnoreCase)),
+            "CORS nie udostepnia ETag.");
+    });
+
+    await h.Run("startpage: logo, osobna wersja, ETag, konflikt, usuniecie i audit", async () =>
+    {
+        var stamp = await h.Get(h.Admin, spPath);
+        var head = await h.Head(deviceA);
+
+        using (var missing = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage/logo"))
+            await SpJson(missing, 404);
+
+        JsonElement uploaded;
+
+        using (var upload = await SpSend(h.Admin, HttpMethod.Put,
+                   SpLogoPath(deviceA.ProfileId, stamp), bytes: spPng))
+            uploaded = await SpJson(upload);
+
+        Expect(uploaded.GetProperty("logoVersion").GetInt64() ==
+               stamp.GetProperty("logoVersion").GetInt64() + 1,
+            "Nie zwiekszono wersji logo.");
+        Expect(uploaded.GetProperty("settingsVersion").GetInt64() ==
+               stamp.GetProperty("settingsVersion").GetInt64(),
+            "Logo zmienilo settingsVersion.");
+
+        string logoEtag;
+
+        using (var image = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage/logo"))
+        {
+            Expect(image.StatusCode == HttpStatusCode.OK, "Brak logo.");
+            Expect(image.Content.Headers.ContentType?.MediaType == "image/png",
+                "Bledny typ logo.");
+            Expect((await image.Content.ReadAsByteArrayAsync()).SequenceEqual(spPng),
+                "Logo zmienilo bajty.");
+            Expect(image.Headers.GetValues("X-FrogSync-Generation").Single() ==
+                   uploaded.GetProperty("generation").GetString(),
+                "Logo nie podaje generacji.");
+            logoEtag = image.Headers.ETag!.ToString();
+        }
+
+        using (var cached = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage/logo", etag: logoEtag))
+            Expect((int)cached.StatusCode == 304, "Logo nie obsluguje ETag.");
+
+        using (var staleDelete = await SpSend(h.Admin, HttpMethod.Delete,
+                   SpLogoPath(deviceA.ProfileId, stamp)))
+            await SpJson(staleDelete, 409);
+
+        using (var removed = await SpSend(h.Admin, HttpMethod.Delete,
+                   SpLogoPath(deviceA.ProfileId, uploaded)))
+        {
+            var result = await SpJson(removed);
+            Expect(result.GetProperty("logoVersion").GetInt64() ==
+                   uploaded.GetProperty("logoVersion").GetInt64() + 1,
+                "Usuniecie logo nie zwiekszylo wersji.");
+        }
+
+        using (var absent = await SpSend(deviceA.Client, HttpMethod.Get,
+                   "/api/v1/startpage/logo", etag: logoEtag))
+            await SpJson(absent, 404);
+
+        Expect(await h.Head(deviceA) == head, "Operacje logo przesunely seq.");
+
+        var audit = new Database(h.Config).Read(c =>
+        {
+            using var cmd = Database.Command(c,
+                "SELECT kind FROM audit WHERE kind LIKE 'startpage-%'", null);
+            using var reader = cmd.ExecuteReader();
+            var kinds = new HashSet<string>(StringComparer.Ordinal);
+            while (reader.Read()) kinds.Add(reader.GetString(0));
+            return kinds;
+        });
+
+        Expect(audit.Contains("startpage-settings") &&
+               audit.Contains("startpage-logo") &&
+               audit.Contains("startpage-logo-deleted"),
+            "Brakuje audytu operacji strony startowej.");
+    });
+
+    await h.Run("startpage: logo odrzuca SVG, falszywy MIME, urwany obraz i ponad 512 KB", async () =>
+    {
+        var stamp = await h.Get(h.Admin, spPath);
+        var path = SpLogoPath(deviceA.ProfileId, stamp);
+        var svg = System.Text.Encoding.UTF8.GetBytes(
+            "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: svg, mime: "image/svg+xml"))
+            await SpJson(response, 415);
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: svg, mime: "image/png"))
+            await SpJson(response, 400);
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: spPng, mime: "image/jpeg"))
+            await SpJson(response, 400);
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: spPng[..24], mime: "image/png"))
+            await SpJson(response, 400);
+
+        var hugeDimensions = spPng.ToArray();
+        BinaryPrimitives.WriteUInt32BigEndian(hugeDimensions.AsSpan(16, 4), 65536);
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: hugeDimensions))
+            await SpJson(response, 400);
+
+        using (var response = await SpSend(h.Admin, HttpMethod.Put, path,
+                   bytes: new byte[512 * 1024 + 1]))
+            await SpJson(response, 413);
+
+        var after = await h.Get(h.Admin, spPath);
+
+        Expect(after.GetProperty("logoVersion").GetInt64() ==
+               stamp.GetProperty("logoVersion").GetInt64(),
+            "Odrzucony obraz zmienil wersje logo.");
+    });
+
+    await h.Run("startpage: lista folderow jest ograniczona do profilu i pomija zakladki", async () =>
+    {
+        var ownFolder = await h.Create(deviceA, "folder", "Wlasny folder", "root:toolbar");
+        var ownBookmark = await h.Create(deviceA, "bookmark", "Zwykla zakladka", ownFolder.Id);
+        var foreignFolder = await h.Create(deviceOther, "folder", "Obcy folder", "root:toolbar");
+
+        var result = await h.Get(h.Admin,
+            $"/admin/api/profiles/{deviceA.ProfileId}/folders");
+        var entries = result.GetProperty("folders").EnumerateArray().ToArray();
+
+        Expect(result.GetProperty("generation").GetString() == await h.Generation(deviceA),
+            "Lista folderow nie ma aktualnej generacji.");
+        Expect(entries.Any(f => f.GetProperty("id").GetString() == "root:toolbar" &&
+                                f.GetProperty("kind").GetString() == "root"),
+            "Brak korzenia potrzebnego do zbudowania drzewa.");
+        Expect(entries.Any(f => f.GetProperty("id").GetString() == ownFolder.Id &&
+                                f.GetProperty("parentId").GetString() == "root:toolbar"),
+            "Brak folderu albo rodzica.");
+        Expect(!entries.Any(f => f.GetProperty("id").GetString() == ownBookmark.Id ||
+                                 f.GetProperty("id").GetString() == foreignFolder.Id),
+            "Lista zawiera zakladke albo folder innego profilu.");
+    });
+
+    await h.Run("startpage: restore obniza wersje, zmienia ETag i blokuje zapis starej generacji", async () =>
+    {
+        await WithServer(async isolated =>
+        {
+            var setup = await isolated.Post(isolated.Admin, "/admin/api/setup/start",
+                new { setupCode = isolated.SetupCode, password });
+            var totpSecret = setup.GetProperty("secret").GetString()!;
+            var step = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+
+            await isolated.Post(isolated.Admin, "/admin/api/setup/finish",
+                new { setupCode = isolated.SetupCode, totp = Otp(totpSecret, step) });
+
+            var profileId = await isolated.Profile("Startpage restore");
+            var dev = await isolated.Pair(profileId,
+                await isolated.PairCode(profileId, "Restore test"));
+            var folder = await isolated.Create(dev, "folder", "Sekcja", "root:toolbar");
+            var path = $"/admin/api/profiles/{profileId}/startpage";
+            var initial = await isolated.Get(isolated.Admin, path);
+
+            var first = await SpPut(isolated.Admin, path,
+                SpSaveBody(initial, SpDocument(folder.Id, "Z kopii")));
+
+            using (var upload = await SpSend(isolated.Admin, HttpMethod.Put,
+                       SpLogoPath(profileId, first), bytes: spPng))
+                first = await SpJson(upload);
+
+            string oldConfigEtag;
+            string oldLogoEtag;
+
+            using (var response = await SpSend(dev.Client, HttpMethod.Get, "/api/v1/startpage"))
+            {
+                await SpJson(response);
+                oldConfigEtag = response.Headers.ETag!.ToString();
+            }
+
+            using (var response = await SpSend(dev.Client, HttpMethod.Get, "/api/v1/startpage/logo"))
+            {
+                Expect(response.IsSuccessStatusCode, "Brak logo przed kopia.");
+                oldLogoEtag = response.Headers.ETag!.ToString();
+            }
+
+            var backup = await isolated.Post(isolated.Admin, "/admin/api/backup", new { });
+            var backupName = backup.GetProperty("file").GetString()!;
+
+            var second = await SpPut(isolated.Admin, path,
+                SpSaveBody(first, SpDocument(folder.Id, "Po kopii")));
+
+            using (var remove = await SpSend(isolated.Admin, HttpMethod.Delete,
+                       SpLogoPath(profileId, second)))
+                second = await SpJson(remove);
+
+            await isolated.Post(isolated.Admin, "/admin/api/restore",
+                new { name = backupName });
+
+            JsonElement restored;
+
+            using (var response = await SpSend(dev.Client, HttpMethod.Get,
+                       "/api/v1/startpage", etag: oldConfigEtag))
+            {
+                restored = await SpJson(response);
+                Expect(response.Headers.ETag!.ToString() != oldConfigEtag,
+                    "Ta sama wersja z nowej generacji zachowala ETag.");
+            }
+
+            Expect(restored.GetProperty("generation").GetString() !=
+                   first.GetProperty("generation").GetString(),
+                "Restore nie zmienil generacji.");
+            Expect(restored.GetProperty("settingsVersion").GetInt64() <
+                   second.GetProperty("settingsVersion").GetInt64(),
+                "Nie odtworzono nizszej wersji konfiguracji.");
+            Expect(restored.GetProperty("logoVersion").GetInt64() <
+                   second.GetProperty("logoVersion").GetInt64(),
+                "Nie odtworzono nizszej wersji logo.");
+            Expect(restored.GetProperty("configuration").GetProperty("sections")[0]
+                    .GetProperty("title").GetString() == "Z kopii",
+                "Nie przywrocono konfiguracji z kopii.");
+
+            using (var response = await SpSend(dev.Client, HttpMethod.Get,
+                       "/api/v1/startpage/logo", etag: oldLogoEtag))
+            {
+                Expect(response.StatusCode == HttpStatusCode.OK &&
+                       response.Headers.ETag!.ToString() != oldLogoEtag,
+                    "Logo z nowej generacji dostalo 304 ze starej generacji.");
+                Expect((await response.Content.ReadAsByteArrayAsync()).SequenceEqual(spPng),
+                    "Nie przywrocono logo.");
+            }
+
+            // Restore uniewaznia sesje panelu; logujemy sie nowym krokiem TOTP.
+            var loginStep = Math.Max(step + 1,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+            await isolated.Post(isolated.Admin, "/admin/api/login",
+                new { password, totp = Otp(totpSecret, loginStep) });
+
+            // first ma te same numery wersji co kopia, ale stara generacje.
+            var conflict = await SpPut(isolated.Admin, path,
+                SpSaveBody(first, SpDocument(folder.Id, "Stary formularz")), 409);
+
+            Expect(conflict.GetProperty("current").GetProperty("generation").GetString() ==
+                   restored.GetProperty("generation").GetString(),
+                "409 nie zawiera nowej generacji.");
+
+            using (var staleLogo = await SpSend(isolated.Admin, HttpMethod.Delete,
+                       SpLogoPath(profileId, first)))
+                await SpJson(staleLogo, 409);
+
+            var unchanged = await isolated.Get(dev.Client, "/api/v1/startpage");
+            Expect(unchanged.GetProperty("configuration").GetProperty("sections")[0]
+                    .GetProperty("title").GetString() == "Z kopii",
+                "Stary formularz nadpisal przywrocona konfiguracje.");
+        });
+    });
+
+
     await h.Run("regresja 10: dwie kolejne kopie tworza dwa rozne gotowe pliki", async () =>
     {
         var first = (await h.Post(h.Admin, "/admin/api/backup", new { }))

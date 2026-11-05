@@ -45,6 +45,8 @@ public static class DeviceEndpoints
 
         var authed = api.MapGroup("").AddEndpointFilter(RequireDevice);
 
+        FrogSync.Server.StartPage.StartPageEndpoints.MapDevice(authed);
+
         authed.MapGet("/hello", async (HttpContext http, SyncService sync, DeviceService devices, AppConfig config) =>
         {
             var device = Device(http);

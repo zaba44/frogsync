@@ -28,6 +28,7 @@ public static class ServerHost
         builder.Services.AddSingleton<SyncService>();
         builder.Services.AddSingleton<DeviceService>();
         builder.Services.AddSingleton<AdminService>();
+        builder.Services.AddSingleton<FrogSync.Server.StartPage.StartPageService>();
         builder.Services.AddSingleton<BackupService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<BackupService>());
         builder.Services.AddHostedService<MaintenanceService>();
@@ -118,10 +119,13 @@ public static class ServerHost
             var headers = http.Response.Headers;
             headers["Access-Control-Allow-Origin"] = origin;
             headers["Vary"] = "Origin";
+            headers["Access-Control-Expose-Headers"] =
+                "ETag, X-FrogSync-Generation, X-FrogSync-Logo-Version";
             if (HttpMethods.IsOptions(http.Request.Method) && http.Request.Headers.ContainsKey("Access-Control-Request-Method"))
             {
                 headers["Access-Control-Allow-Methods"] = "GET, POST";
-                headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-FrogSync-Version";
+                headers["Access-Control-Allow-Headers"] =
+                    "Authorization, Content-Type, X-FrogSync-Version, If-None-Match";
                 headers["Access-Control-Max-Age"] = "600";
                 http.Response.StatusCode = StatusCodes.Status204NoContent;
                 return;
