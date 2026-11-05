@@ -43,10 +43,12 @@ export function searchUrl(engine: SearchEngine, query: string): string {
  * Przypiete przyciski: tylko znane wyszukiwarki, bez powtorzen, najwyzej MAX_PINNED,
  * w kolejnosci ustawionej przez uzytkownika.
  */
-export function normalizePinned(ids: readonly string[], engines: readonly SearchEngine[] = BUILTIN_ENGINES): string[] {
+export function normalizePinned(ids: unknown, engines: readonly SearchEngine[] = BUILTIN_ENGINES): string[] {
+  // Ustawienia ze starszej wersji (albo uszkodzone) moga nie miec listy — wtedy domyslne
+  const list = Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : DEFAULT_PINNED;
   const known = new Set(engines.map(e => e.id));
   const out: string[] = [];
-  for (const id of ids) {
+  for (const id of list) {
     if (known.has(id) && !out.includes(id)) out.push(id);
     if (out.length === MAX_PINNED) break;
   }
