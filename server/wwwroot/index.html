@@ -95,9 +95,9 @@
         </div>
         <button type="button" id="sp-close">Zamknij edytor</button>
       </div>
-      <p class="muted small">Sekcje i katalog wyszukiwarek są wspólne dla profilu.
-        Przypięte wyszukiwarki i wybór domyślnej pozostają lokalne w przeglądarce.
-        Usunięcie sekcji z tej listy nie usuwa zakładek.</p>
+      <p class="muted small">Układ i własne kafelki są wspólne dla profilu.
+        Usunięcie bloku folderu nie usuwa zakładek. Własne kafelki są niezależne od zakładek.
+        Przypięcia wyszukiwarek i dostęp do historii pozostają lokalne w przeglądarce.</p>
       <p id="sp-message" class="notice" role="status" aria-live="polite" hidden></p>
 
       <div id="sp-conflict" class="sp-conflict" role="region" aria-label="Konflikt wersji" hidden>
@@ -119,15 +119,45 @@
         <fieldset id="sp-settings-fields" disabled>
           <legend class="sp-legend">Ustawienia strony startowej</legend>
           <div class="card-head">
-            <h3>Sekcje z folderów zakładek</h3>
+            <h3>Bloki strony startowej</h3>
             <div class="actions">
-              <button type="button" id="sp-add-section">Dodaj sekcję</button>
+              <button type="button" id="sp-add-section">Dodaj folder</button>
+              <button type="button" id="sp-add-custom">Dodaj własne kafelki</button>
+              <button type="button" id="sp-add-top">Dodaj najczęściej odwiedzane</button>
               <button type="button" id="sp-refresh-folders">Odśwież foldery</button>
             </div>
           </div>
-          <p class="muted small">Wybierz folder z drzewa profilu. Jeden folder może być wskazany raz.
-            Brak własnej nazwy oznacza użycie nazwy folderu. Maksymalnie 64 sekcje.</p>
+          <p class="muted small">Kolejność bloków odpowiada stronie startowej.
+            Maksymalnie 64 bloki i 200 własnych kafelków łącznie.
+            Własne kafelki: <span id="sp-tile-count">0</span>/200.
+            Zapis pustej listy bloków pozostawia samą wyszukiwarkę.</p>
           <div id="sp-sections"></div>
+
+          <div class="sp-subheading">
+            <h3>Szablon wyglądu</h3>
+            <label>Domyślny szablon profilu
+              <select id="sp-template">
+                <option value="classic">Classic — obecny układ</option>
+                <option value="compact">Compact — mniejsze kafelki i kolumny</option>
+                <option value="glass">Glass — tło, szkło, zegar i data</option>
+                <option value="live">Live — animowany gradient</option>
+              </select>
+            </label>
+            <p class="muted small">Szablon zmienia wygląd. Użytkownik będzie mógł wybrać lokalne nadpisanie we wtyczce.</p>
+            <figure class="sp-template-figure">
+              <div id="sp-template-preview" class="sp-template-preview" data-template="classic" aria-hidden="true">
+                <img id="sp-template-background" alt="" hidden>
+                <div class="sp-preview-clock">12:34 <small>Podgląd zegara i daty</small></div>
+                <div class="sp-preview-search">Wyszukiwarka</div>
+                <div class="sp-preview-groups">
+                  <div><strong>Praca</strong><div class="sp-preview-tiles"><span>A</span><span>B</span><span>C</span></div></div>
+                  <div><strong>Dom</strong><div class="sp-preview-tiles"><span>D</span><span>E</span><span>F</span></div></div>
+                </div>
+              </div>
+              <figcaption id="sp-template-caption" class="muted small"></figcaption>
+            </figure>
+            <p class="muted small">Poglądowy podgląd stylu; nie pokazuje zawartości Twoich bloków.</p>
+          </div>
 
           <div class="card-head sp-subheading">
             <h3>Wyszukiwarki profilu</h3>
@@ -169,6 +199,29 @@
             <button type="button" id="sp-delete-logo" class="danger">Zaznacz do usunięcia</button>
             <button type="button" id="sp-cancel-logo">Anuluj zmianę logo</button>
             <button type="button" id="sp-refresh-logo">Odśwież podgląd</button>
+          </div>
+        </fieldset>
+      </form>
+
+      <form id="sp-background-form" class="sp-logo-form">
+        <fieldset id="sp-background-fields" disabled>
+          <legend class="sp-legend">Tło szablonu Glass</legend>
+          <h3>Tło szablonu Glass</h3>
+          <p class="muted small">PNG, JPEG lub WebP do 2 MB, maksymalnie 4096 × 4096 pikseli.
+            Bez SVG. Bez obrazu Glass użyje gradientu. Tło jest zapisywane osobno;
+            wybór innego szablonu nie usuwa obrazu z profilu.</p>
+          <div class="sp-logo-layout">
+            <img id="sp-background-preview" class="sp-logo-preview sp-background-preview" alt="Podgląd tła" hidden>
+            <p id="sp-background-state" class="muted small" aria-live="polite"></p>
+          </div>
+          <label>Wybierz obraz tła
+            <input id="sp-background-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp">
+          </label>
+          <div class="actions">
+            <button type="submit" id="sp-save-background" class="primary">Zapisz tło</button>
+            <button type="button" id="sp-delete-background" class="danger">Zaznacz do usunięcia</button>
+            <button type="button" id="sp-cancel-background">Anuluj zmianę tła</button>
+            <button type="button" id="sp-refresh-background">Odśwież podgląd</button>
           </div>
         </fieldset>
       </form>
@@ -253,6 +306,7 @@
 </dialog>
 
 <script src="lib/qrcode-generator-1.4.4.js"></script>
+<script src="startpage-editor-v2.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

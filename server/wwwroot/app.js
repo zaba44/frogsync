@@ -469,7 +469,8 @@ async function spRequest(path, { method = 'GET', body, type, image = false } = {
     if (image && (response.ok || (response.status === 404 && generation))) {
       return {
         generation,
-        version: Number(response.headers.get('X-FrogSync-Logo-Version')),
+        version: Number(response.headers.get(image === 'background'
+          ? 'X-FrogSync-Background-Version' : 'X-FrogSync-Logo-Version')),
         blob: response.status === 404 ? null : await response.blob(),
       };
     }
@@ -503,19 +504,27 @@ function spCheckSnapshot(value, profileId) {
   if (!value || value.profileId !== profileId || typeof value.generation !== 'string' ||
       !value.generation || !Number.isSafeInteger(value.settingsVersion) || value.settingsVersion < 0 ||
       !Number.isSafeInteger(value.logoVersion) || value.logoVersion < 0 ||
-      value.configuration?.version !== 1 ||
-      !Array.isArray(value.configuration.sections) || !Array.isArray(value.configuration.engines))
-    throw new Error('Niepoprawna konfiguracja serwera. Formularz nie został zmieniony.');
+      !Number.isSafeInteger(value.backgroundVersion) || value.backgroundVersion < 0 ||
+      value.configuration?.version !== 2 || typeof value.configuration.configured !== 'boolean' ||
+      !Object.hasOwn(SP_V2_TEMPLATES, value.configuration.template) ||
+      !Array.isArray(value.configuration.blocks) || !Array.isArray(value.configuration.engines))
+    throw new Error('Niepoprawna konfiguracja v2. Formularz nie został zmieniony.');
   return value;
 }
 
 function spDocument(snapshot) {
+  const config = snapshot.configuration;
   return {
-    version: 1,
-    sections: snapshot.configuration.sections.map(s => ({
-      id: s.id, folderId: s.folderId, title: s.title ?? null,
-    })),
-    engines: snapshot.configuration.engines.map(e => ({
+    version: 2, configured: config.configured, template: config.template,
+    blocks: config.blocks.map(b => {
+      const block = { id: b.id, type: b.type, title: b.title ?? null };
+      if (b.type === 'folder') block.folderId = b.folderId;
+      if (b.type === 'custom') block.tiles = b.tiles.map(t => ({
+        id: t.id, title: t.title, url: t.url, color: t.color ?? null,
+      }));
+      return block;
+    }),
+    engines: config.engines.map(e => ({
       id: e.id, name: e.name, url: e.url, color: e.color, suggest: e.suggest,
     })),
   };
@@ -526,7 +535,8 @@ function spSettingsDirty(editor) {
 }
 
 function spHasDraft() {
-  return !!spEditor && (spSettingsDirty(spEditor) || spEditor.logoAction !== 'keep');
+  return !!spEditor && (spSettingsDirty(spEditor) ||
+    Object.values(spEditor.assets).some(asset => asset.action !== 'keep'));
 }
 
 function spMessage(text, kind = 'error') {
@@ -555,7 +565,7 @@ function spCanLeave() {
     spMessage('Poczekaj na zakończenie bieżącej operacji.');
     return false;
   }
-  return !spHasDraft() || confirm('Odrzucić niezapisany formularz strony startowej i zmianę logo?');
+  return !spHasDraft() || confirm('Odrzucić niezapisany układ i wybrane zmiany logo oraz tła?');
 }
 
 function spClear() {
@@ -564,9 +574,13 @@ function spClear() {
   $('#sp-sections').replaceChildren();
   $('#sp-engines').replaceChildren();
   $('#sp-server-version').replaceChildren();
-  $('#sp-logo-file').value = '';
-  $('#sp-logo-preview').removeAttribute('src');
-  $('#sp-logo-preview').hidden = true;
+  for (const name of ['logo', 'background']) {
+    $('#sp-' + name + '-file').value = '';
+    $('#sp-' + name + '-preview').removeAttribute('src');
+    $('#sp-' + name + '-preview').hidden = true;
+  }
+  $('#sp-template-background').removeAttribute('src');
+  $('#sp-template-background').hidden = true;
   $('#sp-conflict').hidden = true;
   $('#sp-profile-name').textContent = '';
   $('#sp-versions').textContent = '';
@@ -593,23 +607,22 @@ async function spOpen(profile) {
     spCheckSnapshot(snapshot, profile.id);
     const editor = {
       profileId: profile.id, profileName: profile.name,
-      base: snapshot, logoBase: snapshot, draft: spDocument(snapshot),
+      base: snapshot, draft: spDocument(snapshot),
       folders: [], foldersGeneration: '', folderLabels: new Map(),
-      busy: false, conflict: null, logoAction: 'keep',
-      logoFile: null, logoType: '', filePreview: null,
-      serverPreview: null, logoKnown: false, logoMessage: 'Ładowanie podglądu…', logoRead: 0,
+      busy: false, conflict: null,
+      assets: { logo: spNewAsset(snapshot), background: spNewAsset(snapshot) },
     };
     spSetFolders(editor, folders);
     if (folders.generation !== snapshot.generation)
       throw new Error('Stan serwera zmienił się podczas odczytu. Otwórz profil ponownie.');
     spEditor = editor;
-    $('#sp-logo-file').value = '';
+    for (const name of ['logo', 'background']) $('#sp-' + name + '-file').value = '';
     spRenderSections(editor);
     spRenderEngines(editor);
-    spRenderLogo(editor);
+    for (const name of ['logo', 'background']) spRenderAsset(editor, name);
     spRenderConflict(editor);
     spMessage('');
-    void spLoadLogo(editor);
+    for (const name of ['logo', 'background']) void spLoadAsset(editor, name);
   } catch (error) {
     spMessage(error.message);
   } finally {
@@ -686,37 +699,8 @@ function spRowActions(list, index, render) {
 }
 
 function spRenderSections(editor) {
-  const box = $('#sp-sections');
-  box.replaceChildren();
-  editor.draft.sections.forEach((section, index) => {
-    const select = el('select', { required: '', 'aria-label': 'Folder sekcji ' + (index + 1) });
-    select.append(el('option', { value: '' }, 'Wybierz folder…'));
-    if (section.folderId && !editor.folderLabels.has(section.folderId))
-      select.append(el('option', { value: section.folderId },
-        'Niedostępny folder: ' + section.folderId));
-    for (const [id, path] of editor.folderLabels) {
-      const option = el('option', { value: id }, path);
-      option.disabled = editor.draft.sections.some(s => s !== section && s.folderId === id);
-      select.append(option);
-    }
-    select.value = section.folderId;
-    select.addEventListener('change', () => {
-      section.folderId = select.value;
-      spRenderSections(editor);
-      spUpdate();
-      $('#sp-sections').querySelectorAll('select')[index]?.focus();
-    });
-    box.append(el('div', { class: 'sp-row' },
-      el('div', { class: 'sp-section-fields' },
-        spField('Folder (ścieżka w drzewie)', select),
-        spField('Własna nazwa — opcjonalnie',
-          spInput(section.title, { maxlength: '200', placeholder: 'Nazwa folderu' },
-            value => { section.title = value || null; }))),
-      spRowActions(editor.draft.sections, index, () => spRenderSections(editor))));
-  });
-  if (!editor.draft.sections.length)
-    box.append(el('p', { class: 'muted small' },
-      'Bez sekcji strona startowa korzysta z paska zakładek.'));
+  spRenderBlocks(editor);
+  spRenderTemplate(editor);
 }
 
 function spRenderEngines(editor) {
@@ -743,94 +727,81 @@ function spRenderEngines(editor) {
   $('#sp-default-engines').hidden = editor.draft.engines.length !== 0;
 }
 
-function spRenderLogo(editor) {
-  const image = $('#sp-logo-preview');
-  const source = editor.logoAction === 'upload' ? editor.filePreview :
-    editor.logoAction === 'delete' ? null : editor.serverPreview;
-  image.hidden = !source;
-  if (source) image.src = source;
-  else image.removeAttribute('src');
-  const action = editor.logoAction === 'upload'
-    ? 'Wybrano: ' + editor.logoFile.name + ' — jeszcze nie zapisano.'
-    : editor.logoAction === 'delete' ? 'Logo zostanie usunięte po zatwierdzeniu.'
-    : editor.logoKnown ? (editor.serverPreview ? 'Logo zapisane na serwerze.' : 'Profil nie ma logo.') : '';
-  $('#sp-logo-state').textContent = [action, editor.logoMessage].filter(Boolean).join(' ');
-  $('#sp-save-logo').textContent = editor.logoAction === 'delete'
-    ? 'Usuń logo z serwera' : 'Zapisz logo';
-}
-
-async function spLoadLogo(editor) {
-  const read = ++editor.logoRead;
-  const stamp = editor.logoBase;
-  try {
-    const result = await spRequest(spPath(editor) + '/startpage/logo', { image: true });
-    if (result.generation !== stamp.generation || result.version !== stamp.logoVersion)
-      throw new Error('Logo zmieniło się na serwerze. Odśwież podgląd, aby porównać wersje.');
-    let source = null;
-    if (result.blob) {
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(result.blob.type) ||
-          result.blob.size > 512 * 1024)
-        throw new Error('Serwer zwrócił niepoprawny obraz logo.');
-      source = 'data:' + result.blob.type + ';base64,' + await readFile(result.blob, false);
-    }
-    if (spEditor !== editor || read !== editor.logoRead || editor.logoBase !== stamp) return;
-    editor.serverPreview = source;
-    editor.logoKnown = true;
-    editor.logoMessage = '';
-  } catch (error) {
-    if (spEditor !== editor || read !== editor.logoRead || editor.logoBase !== stamp) return;
-    editor.logoMessage = error.message;
-  }
-  spRenderLogo(editor);
-}
-
 function spRenderConflict(editor) {
   const conflict = editor.conflict;
   $('#sp-conflict').hidden = !conflict;
   const box = $('#sp-server-version');
   box.replaceChildren();
   if (!conflict) return;
-  const current = conflict.current;
-  $('#sp-conflict-kind').textContent = conflict.kind === 'settings'
-    ? 'Konflikt ustawień strony startowej.' : 'Konflikt logo.';
+  const current = conflict.current, config = current.configuration;
+  $('#sp-conflict-kind').textContent = {
+    settings: 'Konflikt układu strony startowej.', logo: 'Konflikt logo.', background: 'Konflikt tła.',
+  }[conflict.kind];
   box.append(el('p', { class: 'small muted' },
-    'Wersja ustawień: ' + current.settingsVersion + '; logo: ' + current.logoVersion +
-    (current.generation !== editor.base.generation ? '. Zmieniła się generacja bazy.' : '.')));
-  const sections = el('ol', {});
-  current.configuration.sections.forEach(s => sections.append(el('li', {},
-    (s.title || s.folderTitle || s.folderId) + (s.available ? '' : ' — folder niedostępny'))));
+    'Ustawienia: ' + current.settingsVersion + '; logo: ' + current.logoVersion +
+    '; tło: ' + current.backgroundVersion + '.'),
+    el('p', {}, 'Szablon: ' + SP_V2_TEMPLATES[config.template]));
+  const blocks = el('ol', {});
+  config.blocks.forEach(b => {
+    const caption = b.type === 'folder'
+      ? (b.title || b.folderTitle || b.folderId) + (b.available ? '' : ' — folder niedostępny')
+      : b.title || (b.type === 'top' ? 'Najczęściej odwiedzane' : 'Własne kafelki');
+    const row = el('li', {}, caption);
+    if (b.type === 'custom') {
+      const tiles = el('ul', {});
+      b.tiles.forEach(t => tiles.append(el('li', {}, t.title + ': ' + t.url +
+        (t.color ? ' · ' + t.color : ''))));
+      row.append(tiles);
+    }
+    blocks.append(row);
+  });
+  box.append(config.blocks.length ? blocks : el('p', {}, config.configured
+    ? 'Pusty układ — sama wyszukiwarka.' : 'Profil nieskonfigurowany — pasek zakładek.'));
   const engines = el('ul', {});
-  current.configuration.engines.forEach(e =>
-    engines.append(el('li', {}, e.name + ': ' + e.url + ' · ' + e.color + ' · ' + e.suggest)));
-  box.append(el('strong', {}, 'Sekcje na serwerze'),
-    current.configuration.sections.length ? sections : el('p', {}, 'Pasek zakładek (brak sekcji).'),
-    el('strong', {}, 'Wyszukiwarki na serwerze'),
-    current.configuration.engines.length ? engines : el('p', {}, 'Katalog wbudowany.'));
+  config.engines.forEach(e => engines.append(el('li', {}, e.name + ': ' + e.url)));
+  box.append(el('strong', {}, 'Wyszukiwarki'),
+    config.engines.length ? engines : el('p', {}, 'Katalog wbudowany.'));
+  if (conflict.kind !== 'settings') {
+    box.append(el('a', {
+      href: 'admin/api/' + spPath(editor) + '/startpage/' + conflict.kind,
+      target: '_blank', rel: 'noopener',
+    }, 'Otwórz bieżący obraz z serwera'));
+  }
 }
 
 function spUpdate() {
   const editor = spEditor;
   const locked = spOpening || !!editor?.busy;
-  for (const button of document.querySelectorAll('.sp-profile-open'))
-    button.disabled = locked;
+  for (const button of document.querySelectorAll('.sp-profile-open')) button.disabled = locked;
   $('#sp-close').disabled = locked;
-  $('#sp-settings-fields').disabled = locked || !editor;
-  $('#sp-logo-fields').disabled = locked || !editor;
+  for (const id of ['#sp-settings-fields', '#sp-logo-fields', '#sp-background-fields'])
+    $(id).disabled = locked || !editor;
   for (const id of ['#sp-compare', '#sp-rebase', '#sp-load-server'])
     $(id).disabled = locked || !editor?.conflict;
   if (!editor) return;
+  if (editor.draft.blocks.length || editor.draft.engines.length || editor.draft.template !== 'classic')
+    editor.draft.configured = true;
   const dirty = spSettingsDirty(editor);
   $('#sp-profile-name').textContent = editor.profileName;
-  $('#sp-versions').textContent =
-    'Wersja ustawień: ' + editor.base.settingsVersion + ' · logo: ' + editor.logoBase.logoVersion;
-  $('#sp-dirty').textContent = dirty ? 'Ustawienia mają niezapisane zmiany.' : 'Ustawienia bez niezapisanych zmian.';
-  $('#sp-save-settings').disabled = locked || !!editor.conflict || !dirty;
-  $('#sp-save-logo').disabled = locked || !!editor.conflict || editor.logoAction === 'keep';
-  $('#sp-cancel-logo').disabled = locked || editor.logoAction === 'keep';
-  $('#sp-add-section').disabled = locked || editor.draft.sections.length >= 64;
+  $('#sp-versions').textContent = 'Ustawienia: ' + editor.base.settingsVersion +
+    ' · logo: ' + editor.assets.logo.base.logoVersion +
+    ' · tło: ' + editor.assets.background.base.backgroundVersion;
+  $('#sp-dirty').textContent = dirty ? 'Układ ma niezapisane zmiany.' :
+    editor.base.configuration.configured ? 'Układ zapisany.' : 'Profil nie ma jeszcze zapisanego układu.';
+  $('#sp-save-settings').disabled = locked || !!editor.conflict ||
+    (!dirty && editor.base.configuration.configured);
+  const full = editor.draft.blocks.length >= 64;
+  $('#sp-add-section').disabled = locked || full;
+  $('#sp-add-custom').disabled = locked || full;
+  $('#sp-add-top').disabled = locked || full || editor.draft.blocks.some(b => b.type === 'top');
   $('#sp-add-engine').disabled = locked || editor.draft.engines.length >= 32;
   $('#sp-refresh-folders').disabled = locked || !!editor.conflict;
-  $('#sp-refresh-logo').disabled = locked || !!editor.conflict;
+  for (const name of ['logo', 'background']) {
+    const asset = editor.assets[name];
+    $('#sp-save-' + name).disabled = locked || !!editor.conflict || asset.action === 'keep';
+    $('#sp-cancel-' + name).disabled = locked || asset.action === 'keep';
+    $('#sp-refresh-' + name).disabled = locked || !!editor.conflict;
+  }
 }
 
 async function spRefreshAudit() {
@@ -871,15 +842,7 @@ function spValidatedDocument(editor) {
   if (editor.foldersGeneration !== editor.base.generation)
     throw new Error('Odśwież foldery: lista pochodzi z innej generacji bazy.');
   const document = JSON.parse(JSON.stringify(editor.draft));
-  const folders = new Set();
-  for (const section of document.sections) {
-    if (!editor.folderLabels.has(section.folderId))
-      throw new Error('Wybierz dostępny folder dla każdej sekcji albo usuń niedostępną sekcję.');
-    if (folders.has(section.folderId))
-      throw new Error('Ten sam folder może występować tylko w jednej sekcji.');
-    folders.add(section.folderId);
-    section.title = section.title?.trim() || null;
-  }
+  spValidateBlocks(editor, document);
   for (const engine of document.engines) {
     engine.name = engine.name.trim();
     engine.url = engine.url.trim();
@@ -920,15 +883,18 @@ $('#sp-settings-form').addEventListener('submit', event => {
     editor.draft = spDocument(saved);
     spRenderSections(editor);
     spRenderEngines(editor);
-    spMessage('Ustawienia strony startowej zapisane. Zmianę logo zapisujesz osobno.', 'ok');
+    spMessage('Układ zapisany. Logo i tło zapisujesz osobno.', 'ok');
   });
 });
 
-$('#sp-add-section').addEventListener('click', () => {
-  const editor = spEditor;
-  if (!editor || editor.draft.sections.length >= 64) return;
-  editor.draft.sections.push({ id: crypto.randomUUID(), folderId: '', title: null });
-  spRenderSections(editor);
+$('#sp-add-section').addEventListener('click', () => spAddBlock('folder'));
+$('#sp-add-custom').addEventListener('click', () => spAddBlock('custom'));
+$('#sp-add-top').addEventListener('click', () => spAddBlock('top'));
+$('#sp-template').addEventListener('change', event => {
+  if (!spEditor) return;
+  spEditor.draft.template = event.target.value;
+  spEditor.draft.configured = true;
+  spRenderTemplate(spEditor);
   spUpdate();
 });
 
@@ -971,95 +937,8 @@ $('#sp-refresh-folders').addEventListener('click', () => {
   });
 });
 
-$('#sp-logo-file').addEventListener('change', async event => {
-  const editor = spEditor;
-  const file = event.target.files[0];
-  if (!editor || !file) return;
-  const type = (file.type || ({
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
-  }[file.name.split('.').pop().toLowerCase()] || '')).toLowerCase();
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(type) || file.size > 512 * 1024) {
-    event.target.value = '';
-    spMessage('Wybierz PNG, JPEG lub WebP do 512 KB. Poprzednia zmiana logo została zachowana.');
-    return;
-  }
-  editor.logoAction = 'upload';
-  editor.logoFile = file;
-  editor.logoType = type;
-  editor.filePreview = null;
-  spRenderLogo(editor);
-  spUpdate();
-  try {
-    const source = 'data:' + type + ';base64,' + await readFile(file, false);
-    if (spEditor === editor && editor.logoFile === file && editor.logoAction === 'upload') {
-      editor.filePreview = source;
-      spRenderLogo(editor);
-    }
-  } catch (error) {
-    if (spEditor === editor && editor.logoFile === file) spMessage(error.message);
-  }
-});
-
-function spCancelLogo(editor) {
-  editor.logoAction = 'keep';
-  editor.logoFile = null;
-  editor.filePreview = null;
-  $('#sp-logo-file').value = '';
-  spRenderLogo(editor);
-  spUpdate();
-}
-
-$('#sp-cancel-logo').addEventListener('click', () => {
-  if (spEditor) spCancelLogo(spEditor);
-});
-
-$('#sp-delete-logo').addEventListener('click', () => {
-  if (!spEditor) return;
-  spEditor.logoAction = 'delete';
-  spEditor.logoFile = null;
-  spEditor.filePreview = null;
-  $('#sp-logo-file').value = '';
-  spRenderLogo(spEditor);
-  spUpdate();
-});
-
-$('#sp-logo-form').addEventListener('submit', event => {
-  event.preventDefault();
-  const editor = spEditor;
-  if (!editor || editor.conflict || editor.logoAction === 'keep') return;
-  void spWork(editor, 'logo', async () => {
-    const stamp = editor.logoBase;
-    const query = new URLSearchParams({
-      generation: stamp.generation, logoVersion: String(stamp.logoVersion),
-    });
-    const saved = spCheckSnapshot(await spRequest(
-      spPath(editor) + '/startpage/logo?' + query,
-      editor.logoAction === 'delete' ? { method: 'DELETE' } :
-        { method: 'PUT', body: editor.logoFile, type: editor.logoType }), editor.profileId);
-    editor.logoBase = saved;
-    spCancelLogo(editor);
-    await spLoadLogo(editor);
-    spMessage('Zmiana logo zapisana. Formularz ustawień pozostał zachowany.', 'ok');
-  });
-});
-
-$('#sp-refresh-logo').addEventListener('click', () => {
-  const editor = spEditor;
-  void spWork(editor, 'logo', async () => {
-    const current = spCheckSnapshot(
-      await spRequest(spPath(editor) + '/startpage'), editor.profileId);
-    if (editor.logoAction !== 'keep' &&
-        (current.generation !== editor.logoBase.generation ||
-         current.logoVersion !== editor.logoBase.logoVersion)) {
-      editor.conflict = { kind: 'logo', current };
-      spRenderConflict(editor);
-      spMessage('Logo zmieniło się na serwerze. Wybrany plik został zachowany.');
-      return;
-    }
-    editor.logoBase = current;
-    await spLoadLogo(editor);
-  });
-});
+spWireAsset('logo');
+spWireAsset('background');
 
 $('#sp-compare').addEventListener('click', () => {
   const editor = spEditor;
@@ -1079,9 +958,7 @@ async function spResolveConflict(loadServer) {
   if (!editor?.conflict || editor.busy) return;
   const { kind, current } = editor.conflict;
   const question = loadServer
-    ? (kind === 'settings'
-      ? 'Odrzucić lokalny formularz ustawień i wczytać pokazaną wersję serwera? Zmiana logo pozostanie zachowana.'
-      : 'Odrzucić wybrany plik lub usunięcie logo i wczytać wersję serwera? Ustawienia pozostaną zachowane.')
+    ? 'Wczytać pokazaną wersję serwera i odrzucić lokalną zmianę w tej części? Pozostałe formularze pozostaną zachowane.'
     : 'Zachować formularz i użyć pokazanej wersji jako podstawy? Kolejny zapis zastąpi ją Twoimi danymi. Teraz nic nie zostanie wysłane.';
   if (!confirm(question)) return;
   await spWork(editor, kind, async () => {
@@ -1095,15 +972,24 @@ async function spResolveConflict(loadServer) {
       spRenderSections(editor);
       spRenderEngines(editor);
     } else {
-      editor.logoBase = current;
-      if (loadServer) spCancelLogo(editor);
-      await spLoadLogo(editor);
+      const asset = editor.assets[kind];
+      // Odczyt przed odrzuceniem pliku: awaria sieci zachowuje cala zmiane.
+      const source = loadServer ? await spReadAsset(editor, kind, current) : null;
+      asset.base = current;
+      if (loadServer) {
+        asset.read++;
+        asset.serverPreview = source;
+        asset.known = true;
+        asset.message = '';
+        spCancelAsset(editor, kind);
+      } else {
+        void spLoadAsset(editor, kind);
+      }
     }
     editor.conflict = null;
     spRenderConflict(editor);
-    spMessage(loadServer
-      ? 'Wczytano pokazaną wersję serwera.'
-      : 'Formularz zachowany. Aby wysłać swoje dane, kliknij odpowiedni przycisk zapisu.', 'ok');
+    spMessage(loadServer ? 'Wczytano pokazaną wersję serwera.' :
+      'Zmiany zachowane. Aby je wysłać, kliknij odpowiedni przycisk zapisu.', 'ok');
   });
 }
 

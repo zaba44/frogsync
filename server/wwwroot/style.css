@@ -342,6 +342,200 @@ details summary { cursor: pointer; color: var(--accent-strong); }
   }
 }
 
+/* Bloki, wlasne kafelki i podglad szablonow v2. */
+
+.sp-block > .card-head {
+  margin-bottom: 14px;
+}
+
+.sp-custom-tiles {
+  margin-bottom: 12px;
+}
+
+.sp-custom-tile {
+  padding: 12px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+}
+
+.sp-tile-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 120px;
+  gap: 12px;
+  align-items: start;
+}
+
+.sp-editor .sp-color-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sp-editor .sp-color-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+.sp-background-preview {
+  width: 180px;
+  height: 100px;
+}
+
+.sp-template-figure {
+  margin: 12px 0;
+}
+
+.sp-template-figure figcaption {
+  margin-top: 8px;
+}
+
+.sp-template-preview {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 210px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+#sp-template-background {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: .6;
+}
+
+.sp-preview-search {
+  max-width: 420px;
+  margin: 0 auto 18px;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  text-align: center;
+  background: var(--input);
+  color: var(--muted);
+}
+
+.sp-preview-groups {
+  display: grid;
+  gap: 16px;
+}
+
+.sp-preview-groups strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.sp-preview-tiles {
+  display: flex;
+  gap: 10px;
+}
+
+.sp-preview-tiles span {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--text);
+}
+
+.sp-preview-clock {
+  display: none;
+  text-align: center;
+  font-size: 26px;
+  margin-bottom: 14px;
+}
+
+.sp-preview-clock small {
+  display: block;
+  font-size: 11px;
+}
+
+.sp-template-preview[data-template="compact"] .sp-preview-groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sp-template-preview[data-template="compact"] .sp-preview-tiles {
+  gap: 6px;
+}
+
+.sp-template-preview[data-template="compact"] .sp-preview-tiles span {
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.sp-template-preview[data-template="glass"] {
+  background: linear-gradient(135deg, var(--accent-soft), var(--card), var(--accent-soft));
+}
+
+.sp-template-preview[data-template="glass"] .sp-preview-clock {
+  display: block;
+}
+
+.sp-template-preview[data-template="glass"] .sp-preview-tiles span,
+.sp-template-preview[data-template="glass"] .sp-preview-search {
+  background: var(--accent-soft);
+  backdrop-filter: blur(8px);
+}
+
+.sp-template-preview[data-template="live"] {
+  background: linear-gradient(120deg, var(--accent-soft), var(--card), var(--accent-soft));
+  background-size: 300% 300%;
+  animation: sp-preview-gradient 10s ease-in-out infinite;
+}
+
+.sp-template-preview[data-template="live"] .sp-preview-tiles span {
+  animation: sp-preview-enter .45s ease-out both;
+  transition: transform .2s ease;
+}
+
+.sp-template-preview[data-template="live"] .sp-preview-tiles span:hover {
+  transform: translateY(-4px);
+}
+
+@keyframes sp-preview-gradient {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes sp-preview-enter {
+  from { opacity: .4; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-template-preview,
+  .sp-template-preview .sp-preview-tiles span {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .sp-tile-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .sp-template-preview[data-template="compact"] .sp-preview-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 640px) {
   form.inline { flex-direction: column; }
   form.inline input { min-width: 0; }
