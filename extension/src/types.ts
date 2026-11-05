@@ -64,6 +64,7 @@ export type ConnectionState =
   | 'cert'
   | 'revoked'
   | 'error'
+  | 'outdated'
   | 'ok';
 
 export interface SyncStatus {
@@ -71,6 +72,9 @@ export interface SyncStatus {
   lastSyncAt?: number;
   lastError?: string;
   consecutiveFailures?: number;
+  minExtensionVersion?: string;
+  latestExtensionVersion?: string;
+  updateAvailable?: boolean;
   pendingOps: number;
   localCount: number;
   pulled: number;

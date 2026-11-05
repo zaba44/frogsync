@@ -247,6 +247,10 @@ public sealed class Database
         ALTER TABLE nodes ADD COLUMN delete_approved INTEGER NOT NULL DEFAULT 0
             CHECK (delete_approved IN (0, 1));
         """,
+        // 4 - ostatnia poprawna wersja zgloszona przez uwierzytelnione urzadzenie.
+        """
+        ALTER TABLE devices ADD COLUMN extension_version TEXT NOT NULL DEFAULT '';
+        """,
     ];
 
     public static int SchemaVersion => Migrations.Length;

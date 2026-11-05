@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Server and extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Server tests
+        run: dotnet run --project tests/FrogSync.Tests
+
+      - name: Extension tests
+        working-directory: extension
+        run: npm test
+
+      - name: Build extension packages
+        working-directory: extension
+        run: npm run build:zip
+
+      - name: Check generated manifests
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const read = path => JSON.parse(readFileSync(path, 'utf8'));
+          const pkg = read('extension/package.json');
+          const chrome = read('extension/build/chrome/manifest.json');
+          const firefox = read('extension/build/firefox/manifest.json');
+          const gecko = firefox.browser_specific_settings?.gecko;
+
+          if (chrome.version !== pkg.version || firefox.version !== pkg.version) {
+            throw new Error('Wersja manifestow rozni sie od package.json.');
+          }
+          if (gecko?.id !== 'frogsync@frogsync.local') {
+            throw new Error('Zmieniono ID Firefoksa.');
+          }
+          if (gecko.update_url !== 'https://zaba44.github.io/frogsync/updates.json') {
+            throw new Error('Nieprawidlowy adres aktualizacji Firefoksa.');
+          }
+          NODE

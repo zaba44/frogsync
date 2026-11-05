@@ -1,9 +1,12 @@
 {
   "name": "frogsync-extension",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Wtyczka FrogSync — Chromium i Firefox z jednego zrodla",
+  "description": "Wtyczka FrogSync — Chromium i Firefox z jednego źródła",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node build.mjs",
     "build:zip": "node build.mjs --zip",
@@ -15,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "esbuild": "^0.24.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "web-ext": "10.8.0"
   }
 }

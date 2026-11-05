@@ -4,6 +4,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY server/FrogSync.Server.csproj server/
+COPY extension/package.json extension/package.json
 RUN dotnet restore server/FrogSync.Server.csproj
 COPY server/ server/
 RUN dotnet publish server/FrogSync.Server.csproj -c Release -o /app --no-restore

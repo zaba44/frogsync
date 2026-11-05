@@ -1,103 +1,91 @@
 # FrogSync
 
-Synchronizacja zakładek między przeglądarkami (Firefox i Chromium) przez własny serwer,
-z wbudowaną stroną startową. Plan całości: [PLAN.md](PLAN.md).
+Synchronizacja zakładek między Firefoksem i przeglądarkami Chromium przez własny
+serwer. Jeden profil zawiera wspólne drzewo zakładek z kolejnością i metadanymi.
 
-**Stan: etap 1 — serwer.** Wtyczka powstaje w etapie 2.
+Plan projektu: [PLAN.md](PLAN.md). Plan strony startowej:
+[PLAN-ETAP3.md](PLAN-ETAP3.md).
+
+Synchronizacja i narzędzia przywracania są zaimplementowane. Strona startowa
+jest planowanym kolejnym etapem. Kanał wydawania opisany poniżej obejmuje podpisany
+Firefox i paczkę rozpakowaną Chromium.
 
 ## Serwer
 
-ASP.NET Core (.NET 10) w kontenerze Docker, baza SQLite na wolumenie. Tylko HTTPS.
+ASP.NET Core .NET 10, SQLite i kontener Docker na Debianie. Tylko HTTPS.
+Baza działa na lokalnym wolumenie; Nextcloud może przechowywać dodatkowe kopie,
+ale nie żywą bazę.
 
-### Bezpieczeństwo domyślne
+### Bezpieczeństwo
 
-- Serwer przyjmuje połączenia **wyłącznie z adresów prywatnych** (sieć lokalna, VPN, loopback).
-  Otwarcie na internet wymaga świadomego `FROGSYNC_ALLOW_PUBLIC=true`.
-- Brak hasła domyślnego. Przy pierwszym starcie w logu kontenera pojawia się jednorazowy
-  **kod konfiguracji** — bez niego nikt nie przejmie panelu świeżo postawionego serwera.
-- Panel wymaga hasła (min. 12 znaków) **i** kodu z aplikacji uwierzytelniającej (2FA).
-  Ten sam kod nie zadziała drugi raz. Po 5 błędach adres jest blokowany.
-- Przeglądarki parują się sześciocyfrowym kodem z panelu, ważnym 5 minut i jednorazowym.
-  Token urządzenia nigdy nie trafia do adresu strony; serwer trzyma tylko jego skrót.
-- Każde parowanie, odwołanie i logowanie trafia do dziennika w panelu.
+- Domyślnie serwer przyjmuje tylko adresy prywatne, loopback i prywatne adresy VPN.
+- Panel wymaga hasła i kodu TOTP. Pierwsza konfiguracja wymaga kodu z logu serwera.
+- Przeglądarkę paruje się jednorazowym sześciocyfrowym kodem, ważnym 5 minut.
+- Token jest osobny dla urządzenia, odwoływalny i nie trafia do adresu strony.
+- Błędne logowania i parowania podlegają limitom.
+- Panel chronią sesja w ciasteczku HTTPS i dodatkowy nagłówek przy zapisach.
 
-### Zmienne środowiskowe
+### Konfiguracja
 
 | Zmienna | Domyślnie | Znaczenie |
 |---|---|---|
 | `FROGSYNC_PORT` | `8443` | port HTTPS |
-| `FROGSYNC_DATA` | `/data` | baza, kopie, certyfikat |
-| `FROGSYNC_CERT` | `/data/certs/server.pfx` | certyfikat PFX z kluczem prywatnym |
-| `FROGSYNC_CERT_PASSWORD` | — | hasło do PFX |
-| `FROGSYNC_ALLOW_PUBLIC` | `false` | `true` = przyjmuj połączenia spoza sieci prywatnych |
-| `FROGSYNC_BACKUP_EXTRA` | — | dodatkowy katalog na kopie (np. folder Nextcloud) |
-| `FROGSYNC_BACKUP_KEEP` | `30` | ile kopii trzymać |
+| `FROGSYNC_DATA` | `/data` | katalog danych |
+| `FROGSYNC_CERT` | `/data/certs/server.pfx` | certyfikat z konfiguracji |
+| `FROGSYNC_CERT_PASSWORD` | brak | hasło certyfikatu z konfiguracji |
+| `FROGSYNC_ALLOW_PUBLIC` | `false` | świadome dopuszczenie adresów publicznych |
+| `FROGSYNC_BACKUP_EXTRA` | brak | dodatkowy katalog kopii |
+| `FROGSYNC_BACKUP_KEEP` | `30` | liczba zachowywanych kopii |
 
-### Certyfikat
+Serwer uruchamia się z certyfikatem samopodpisanym, jeśli nie ma poprawnego
+certyfikatu wgranego w panelu ani wskazanego w konfiguracji. Wtyczka wymaga,
+aby przeglądarka ufała certyfikatowi. Certyfikat z własnego CA można wgrać
+w panelu jako PFX/P12 albo parę PEM.
 
-Serwer startuje z certyfikatem **samopodpisanym**, wygenerowanym na wszystkie adresy maszyny.
-Panel działa od razu (przeglądarka ostrzeże o braku zaufania), ale wtyczka połączy się dopiero
-z certyfikatem z Twojego CA. Wgrywasz go w panelu, sekcja **Certyfikat HTTPS**: plik PFX/P12
-(z hasłem lub bez) albo para PEM (certyfikat + klucz). Działa od razu, bez restartu.
+Certyfikat wgrany w panelu jest w SQLite i trafia do kopii bazy.
+Musi zawierać klucz prywatny, właściwe SAN oraz przeznaczenie do
+uwierzytelniania serwera.
 
-Certyfikat musi mieć klucz prywatny, przeznaczenie *Server Authentication* i w polu SAN
-nazwę albo adres IP, pod którym otwierasz serwer — wystarczy samo IP, nazwa DNS nie jest
-potrzebna. Panel odrzuci plik, który tych warunków nie spełnia, i nie ruszy wtedy działającego
-certyfikatu.
+### Sieć Dockera
 
-Kolejność przy starcie: wgrany w panelu → `FROGSYNC_CERT` → samopodpisany. Uszkodzony plik
-nie unieruchamia serwera: zostaje pominięty z błędem w logu, żeby dało się wejść do panelu
-i wgrać poprawny.
+Obecna konfiguracja używa `network_mode: host`. Przy publikacji portów przez
+Docker proxy serwer może zobaczyć adres bramy zamiast rzeczywistego klienta,
+co ogranicza skuteczność filtra prywatnych adresów.
 
-### Sieć w Dockerze
+Host i zapora muszą dopuszczać tylko zamierzony dostęp z LAN/VPN.
+Nie wystawiaj panelu ani bazy bezpośrednio do internetu.
 
-Używaj `network_mode: host`. Przy zwykłym mapowaniu portów Docker potrafi podstawiać jako
-adres klienta adres bramy `172.x` — wtedy filtr „tylko sieci prywatne” widzi wszystkich
-jako prywatnych i przestaje cokolwiek chronić.
+### Kopie
 
-### Kopie zapasowe
+Kopie powstają przez SQLite Backup API. Podstawowa kopia jest lokalna;
+niepowodzenie dodatkowego zapisu do katalogu chmurowego nie zatrzymuje serwera.
 
-Co 6 godzin i na żądanie z panelu, spójnie przez SQLite Backup API, bez wstrzymywania
-synchronizacji. Najpierw do `/data/backups`, potem — jeśli ustawiono — kopia pliku do
-`FROGSYNC_BACKUP_EXTRA`. Wolny albo niedostępny katalog dodatkowy kończy się ostrzeżeniem
-w panelu, nigdy przestojem serwera.
+Panel umożliwia:
+- wykonanie i pobranie kopii `.db`;
+- pobranie wcześniejszej kopii;
+- przywrócenie zapisanej lub wgranej kopii;
+- przywrócenie serwera z pliku podczas pierwszej konfiguracji.
 
-Certyfikat wgrany w panelu jest przechowywany w bazie, więc jest częścią każdej kopii.
+Kopia zawiera zakładki, urządzenia, administratora z 2FA i wgrany certyfikat.
+Traktuj ją jako dane prywatne, razem z kluczem prywatnym HTTPS.
 
-**Pobranie kopii.** W panelu, w sekcji kopii: „Pobierz” przy wybranej kopii albo „Zrób kopię
-i pobierz”. Plik `.db` to kompletny stan serwera (zakładki, profile, urządzenia, administrator
-z 2FA, certyfikat).
+Przed przywróceniem serwer zapisuje kopię bezpieczeństwa. Po przywróceniu
+unieważnia sesje panelu i zmienia generację bazy; wtyczki uzgadniają stan od nowa.
+Przed operacjami na większej kolekcji zachowaj też eksport zakładek.
 
-**Przywrócenie.** „Przywróć z pliku…” w panelu — serwer sprawdza plik (integralność, wersja
-schematu), przed podmianą robi kopię bezpieczeństwa obecnego stanu, a po przywróceniu wylogowuje
-panel. Przeglądarki same wykryją przywróconą bazę i uzgodnią z nią swój stan; niczego nie trzeba
-parować od nowa.
+Wolumen nazwany przeżywa zwykłe usunięcie kontenera. Usunięcie samego wolumenu
+lub `docker compose down -v` usuwa dane. Przechowuj dodatkową kopię poza nim.
 
-**Nowa instalacja serwera.** Na ekranie pierwszej konfiguracji wybierz „Mam kopię — przywróć
-serwer”, wpisz kod konfiguracji z logu kontenera i wskaż plik kopii. Logujesz się potem
-hasłem i 2FA z kopii.
+### Zgubiony dostęp administratora
 
-**Kopia poza kontenerem.** Wolumen `/data` ginie razem z kontenerem, jeśli usuniesz go
-w Portainerze. Dlatego warto podpiąć katalog hosta (np. folder synchronizowany z Nextcloudem)
-i wskazać go zmienną `FROGSYNC_BACKUP_EXTRA`:
-
-```yaml
-    volumes:
-      - frogsync-data:/data
-      - /srv/kopie/frogsync:/backup-extra
-    environment:
-      FROGSYNC_BACKUP_EXTRA: /backup-extra
-```
-
-### Zgubiony telefon z 2FA
+Na komputerze z dostępem do kontenera:
 
 ```bash
 docker exec frogsync dotnet FrogSync.Server.dll --reset-admin
 ```
 
-Potem restart kontenera — w logu pojawi się nowy kod konfiguracji. Zakładki, profile
-i urządzenia zostają nietknięte. Polecenie wymaga dostępu do kontenera, więc nie da się
-go wywołać przez sieć.
+Następnie zrestartuj kontener i odczytaj nowy kod konfiguracji w logu.
+Zakładki, profile i urządzenia pozostają w bazie.
 
 ## Wersja deweloperska
 
@@ -105,14 +93,162 @@ go wywołać przez sieć.
 docker compose -f deploy/docker-compose.dev.yml up -d --build
 ```
 
-Kontener `frogsync-dev`, port 18443, wolumen `frogsync-dev-data`. Usunięcie razem z danymi:
+Konfiguracja deweloperska korzysta z osobnego kontenera, portu i wolumenu.
 
-```bash
-docker compose -f deploy/docker-compose.dev.yml down -v
-```
+## Budowanie i testy
 
-## Testy
+Wymagane: .NET SDK 10 oraz Node.js 22 lub nowszy.
 
 ```bash
 dotnet run --project tests/FrogSync.Tests
+cd extension
+npm ci
+npm test
+npm run build:zip
 ```
+
+`npm test` obejmuje typecheck, testy rdzenia oraz E2E przeciw prawdziwemu serwerowi.
+E2E buduje serwer w konfiguracji Release.
+
+Build tworzy `extension/build/firefox` i `extension/build/chrome`.
+Paczki trafiają do `extension/dist`.
+
+Lokalny `firefox-extension.xpi` jest archiwum bez podpisu Mozilli. Nie jest
+paczką do trwałej instalacji w zwykłym Firefoksie. Do tego służy podpisany
+plik z GitHub Release.
+
+## Wydania i aktualizacje
+
+Repozytorium: https://github.com/zaba44/frogsync
+
+### Co aktualizuje się automatycznie
+
+**Firefox:** podpisany XPI zainstalowany normalnie, o ID
+`frogsync@frogsync.local`, sprawdza:
+
+https://zaba44.github.io/frogsync/updates.json
+
+Adres jest zapisany w manifeście. Firefox okresowo pobiera manifest i może
+zainstalować wskazaną wyższą wersję. Termin sprawdzenia zależy od Firefoksa;
+można też ręcznie użyć „Sprawdź aktualizacje” w menedżerze dodatków.
+
+Starszą paczkę bez tego adresu trzeba jednorazowo zastąpić podpisaną paczką
+z nowego kanału. Do testu aktualizacji używaj normalnej instalacji XPI,
+nie dodatku tymczasowego z `about:debugging`.
+
+**Chromium:** ZIP w Release służy obecnie do rozpakowania i ręcznego
+przeładowania rozszerzenia. Sam GitHub Release nie aktualizuje instalacji
+rozpakowanej. Automatyczny kanał Chromium przez sklep będzie osobną dostawą.
+
+### Jednorazowa konfiguracja GitHuba i AMO
+
+1. Konto AMO musi mieć prawo publikowania dodatku `frogsync@frogsync.local`.
+   Utwórz dane API do podpisywania.
+2. W repozytorium GitHub utwórz środowisko `release`.
+3. W sekretach tego środowiska zapisz:
+   - `AMO_JWT_ISSUER`;
+   - `AMO_JWT_SECRET`.
+4. W `Settings → Pages → Build and deployment → Source` wybierz
+   **GitHub Actions**.
+5. Sprawdź reguły środowiska `github-pages`: muszą dopuszczać wdrożenia
+   z tagów `v*`. Domyślne ograniczenie do gałęzi może zablokować publikację.
+6. Dopuść workflowom korzystanie z uprawnień zadeklarowanych w YAML.
+   Workflow wydania zapisuje Release, a osobny job publikuje Pages.
+7. Chroń gałąź `main` i prawo tworzenia tagów wydaniowych.
+
+Sekrety AMO są dostępne tylko w kroku podpisywania na oficjalnym repozytorium.
+Workflow CI na pull requestach nie korzysta z sekretów publikacji.
+Nie uruchamiamy `pull_request_target`.
+
+Pages publikuje katalog generowany przez workflow. Jeśli na tym samym adresie
+będzie później dokumentacja, trzeba dołączyć ją do tego katalogu, żeby kolejne
+wdrożenie jej nie zastąpiło.
+
+### Przygotowanie wydania
+
+Jedynym źródłem wersji jest `extension/package.json`.
+Wersja ma format `X.Y.Z`, bez przyrostków beta/rc.
+
+Przykład wykonany w katalogu `extension`:
+
+```bash
+npm version 0.3.2 --no-git-tag-version
+npm ci
+npm test
+npm run build:zip
+```
+
+Zatwierdź `package.json`, `package-lock.json` i kod. Przed pierwszym wydaniem
+z nowym narzędziem podpisywania wygeneruj lockfile:
+
+```bash
+npm install --package-lock-only
+```
+
+Następnie, z katalogu repozytorium:
+
+```bash
+git add extension/package.json extension/package-lock.json
+git commit -m "Release 0.3.2"
+git push origin main
+git tag -a v0.3.2 -m "FrogSync 0.3.2"
+git push origin v0.3.2
+```
+
+Pozostałe zmienione pliki dołącz do właściwego commitu przed utworzeniem tagu.
+Tag musi wskazywać commit należący do historii `main`; numer tagu i obu wpisów
+wersji w lockfile musi odpowiadać `package.json`.
+
+Nie twórz kilku tagów naraz. Poczekaj na zakończenie publikacji poprzedniego
+wydania. Workflow odrzuca wydanie starsze niż najwyższy dostępny tag wersji.
+
+### Co robi workflow wydania
+
+1. Sprawdza pochodzenie tagu, wersję i lockfile.
+2. Uruchamia testy serwera i wtyczki.
+3. Buduje paczki.
+4. Przesyła źródła i paczkę Firefox do AMO jako `unlisted`.
+5. Czeka do godziny na podpis; cały job ma dłuższy limit.
+6. Sprawdza manifest i obecność plików podpisu w pobranym XPI.
+7. Publikuje Release z:
+   - `frogsync-X.Y.Z-firefox.xpi` — podpisany Firefox;
+   - `frogsync-X.Y.Z-chromium.zip` — paczka rozpakowana Chromium;
+   - `frogsync-X.Y.Z-source.zip` — źródła odpowiadające tagowi;
+   - `SHA256SUMS.txt` — sumy kontrolne.
+8. Pobiera publiczny XPI i porównuje hash.
+9. Dopiero wtedy publikuje `updates.json` z pełnym `sha256` podpisanego XPI.
+
+Weryfikacja plików podpisu w CI nie zastępuje weryfikacji kryptograficznej
+wykonywanej przez Firefoksa.
+
+### Nieudane podpisywanie lub publikacja
+
+Nie zakładaj, że podpis AMO będzie gotowy od razu. Zgłoszenie może wymagać
+ręcznego przeglądu.
+
+Jeżeli podpis się nie uda lub upłynie limit:
+- Release i Pages nie są publikowane;
+- sprawdź status wersji w panelu AMO;
+- nie zgłaszaj wielokrotnie tej samej wersji bez sprawdzenia, czy AMO już ją przyjęło.
+
+Jeżeli Release został opublikowany, ale Pages się nie udały, dotychczasowy
+manifest aktualizacji pozostaje aktywny. Ponów nieudany job Pages przez
+„Re-run failed jobs”; nie podpisuj i nie publikuj tej samej wersji ponownie.
+Artefakt wydania jest zachowywany przez 30 dni.
+
+Opublikowanej wersji nie podmieniaj innym kodem. Naprawa dostaje nowy numer,
+nowy podpis i nowy tag. Obniżenie numeru w `updates.json` nie cofnie wersji
+zainstalowanych już w przeglądarkach.
+
+### Próba odbioru kanału Firefox
+
+1. Zainstaluj podpisaną wersję A przez zwykły menedżer dodatków.
+2. Sparuj i dodaj testową zakładkę.
+3. Wydaj wersję B, z wyższym numerem.
+4. Otwórz `updates.json` i sprawdź wersję, adres XPI i hash.
+5. W Firefoksie sprawdź aktualizacje.
+6. Potwierdź wersję B, zachowane parowanie, mapowanie i zakładki.
+
+Pierwszy workflow nie wdraża nowej karty ani zmian protokołu synchronizacji.
+Strażnik minimalnej wersji wtyczki w serwerze i popupie jest osobną częścią
+dostawy 3.0.

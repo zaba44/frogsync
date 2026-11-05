@@ -11,7 +11,7 @@ namespace FrogSync.Server.Admin;
 /// jednorazowy kod konfiguracji — bez niego nikt, nawet z tej samej sieci,
 /// nie przejmie panelu swiezo postawionego serwera.
 /// </summary>
-public sealed class AdminService(Database db, Limiters limiters, ILogger<AdminService> logger)
+public sealed class AdminService(Database db, Limiters limiters, ILogger<AdminService> logger, AppConfig config)
 {
     public const int MinPasswordLength = 12;
     public static readonly TimeSpan SessionLifetime = TimeSpan.FromHours(8);
@@ -260,7 +260,8 @@ public sealed class AdminService(Database db, Limiters limiters, ILogger<AdminSe
         var devices = new List<object>();
         using (var cmd = Database.Command(c, """
             SELECT d.id, d.name, d.browser, d.profile_id, d.created_at, d.last_seen_at, d.last_ip, d.cursor, d.revoked_at,
-                   (SELECT COALESCE(MAX(seq), 0) FROM nodes n WHERE n.profile_id = d.profile_id)
+                   (SELECT COALESCE(MAX(seq), 0) FROM nodes n WHERE n.profile_id = d.profile_id),
+                   d.extension_version
             FROM devices d ORDER BY d.revoked_at IS NOT NULL, d.name
             """, null))
         using (var r = cmd.ExecuteReader())
@@ -271,6 +272,9 @@ public sealed class AdminService(Database db, Limiters limiters, ILogger<AdminSe
                     createdAt = r.GetInt64(4), lastSeenAt = r.IsDBNull(5) ? (long?)null : r.GetInt64(5),
                     lastIp = r.IsDBNull(6) ? null : r.GetString(6),
                     behind = Math.Max(0, r.GetInt64(9) - r.GetInt64(7)),
+                    extensionVersion = r.GetString(10),
+                    extensionVersionStatus = ExtensionVersions.Status(
+                        r.GetString(10), config.MinExtensionVersion, config.LatestExtensionVersion),
                     revokedAt = r.IsDBNull(8) ? (long?)null : r.GetInt64(8),
                 });
 

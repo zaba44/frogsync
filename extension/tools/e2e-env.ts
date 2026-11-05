@@ -199,6 +199,7 @@ class FakeArea {
 }
 
 export class FakeDevice {
+  extensionVersion = '0.3.1';
   readonly bookmarks: FakeBookmarks;
   readonly local = new FakeArea();
   readonly session = new FakeArea();
@@ -215,7 +216,7 @@ const listener = { addListener() {}, removeListener() {} };
   runtime: {
     id: 'e2e',
     getURL: (p: string) => p,
-    getManifest: () => ({ version: '0.3.1' }),
+    getManifest: () => ({ version: current.extensionVersion }),
     // Obecnosc getBrowserInfo = Gecko; wx.isGecko() sprawdza to przy kazdym wywolaniu
     get getBrowserInfo() {
       return current.engine === 'gecko' ? async () => ({ name: 'Firefox', vendor: 'Mozilla', version: '140.0' }) : undefined;

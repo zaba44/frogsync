@@ -12,6 +12,7 @@ import {
 } from './local.js';
 import type { ConflictNote, OpResult, ServerNode, ServerSession, SyncStatus } from './types.js';
 import { wx } from './wx.js';
+import { compareVersions } from './extension-version.js';
 import { planRestore, RESTORE_ROOTS, type RestoreTree } from './core/restore.js';
 import { formatBookmarkHtml } from './bookmark-html.js';
 import {
@@ -359,7 +360,9 @@ export async function pairWith(url: string, code: string, label: string, mode: '
     const session: ServerSession = {
       url: base, token: result.token, deviceId: result.deviceId, deviceName: '', profile: result.profile, generation: '',
     };
-    const info = await api.hello(session);
+    // Najpierw zachowujemy token. Wymaganie aktualizacji nie moze zgubic
+    // jednorazowego parowania; syncInner zatrzyma prace przed bootstrapem.
+    const info = await api.helloInfo(session);
     session.deviceName = info.device.name;
     session.generation = info.generation;
 
@@ -408,6 +411,20 @@ async function syncInner(): Promise<SyncStatus> {
   let s: State | null = null;
   let pushed = 0, pulled = 0;
   try {
+    // Przed loadState: rowniez migracja i wznowienie przywracania zmieniaja stan.
+    const session = await getLocal<ServerSession | null>(KEYS.server, null);
+    if (session) {
+      const info = await api.hello(session);
+      const latest = info.latestExtensionVersion ?? '';
+      await saveStatus({
+        minExtensionVersion: info.minExtensionVersion ?? '',
+        latestExtensionVersion: latest,
+        updateAvailable: !!latest && compareVersions(api.extensionVersion(), latest) < 0,
+      });
+    } else {
+      await saveStatus({ minExtensionVersion: '', latestExtensionVersion: '', updateAvailable: false });
+    }
+
     s = await loadState();
 
     let job = await loadRestoreJob();
@@ -475,14 +492,23 @@ async function syncInner(): Promise<SyncStatus> {
     });
 
   } catch (err) {
+    // Preflight nie laduje silnika, wiec przy outdated nie zapisujemy stanu,
+    // nie rozliczamy intencji, nie ruszamy kolejki ani drzewa przegladarki.
     if (s) await saveState(s);
     const previous = await loadStatus();
+    const stored = await getLocal<{ outbox?: unknown[] } | null>('engineState', null);
     return saveStatus({
-      connection: err instanceof api.Offline ? 'offline' :
+      connection: err instanceof api.Outdated ? 'outdated' :
+        err instanceof api.Offline ? 'offline' :
         err instanceof api.Unauthorized ? 'revoked' : 'error',
       lastError: err instanceof Error ? err.message : String(err),
       consecutiveFailures: (previous.consecutiveFailures ?? 0) + 1,
-      pendingOps: s?.outbox.length ?? previous.pendingOps,
+      pendingOps: s?.outbox.length ?? stored?.outbox?.length ?? previous.pendingOps,
+      ...(err instanceof api.Outdated ? {
+        minExtensionVersion: err.minimum,
+        latestExtensionVersion: err.latest,
+        updateAvailable: true,
+      } : {}),
     });
   }
 }

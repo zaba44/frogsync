@@ -28,7 +28,19 @@ const args    = process.argv.slice(2);
 const doZip   = args.includes('--zip');
 const doWatch = args.includes('--watch');
 
-const VERSION = '0.3.1';
+// Jedno zrodlo wersji dla manifestow i wydania.
+const { version: VERSION } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+if (typeof VERSION !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(VERSION)) {
+  throw new Error('package.json: wersja musi miec format X.Y.Z bez przyrostkow.');
+}
+if (VERSION.split('.').some(part => Number(part) > 65535) || VERSION === '0.0.0') {
+  throw new Error('package.json: wersja nie miesci sie w zakresie manifestu rozszerzenia.');
+}
+
+// Lokalny build nie wymaga tagu. Build na tagu musi byc z nim zgodny.
+if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `v${VERSION}`) {
+  throw new Error(`Tag ${process.env.GITHUB_REF_NAME} nie odpowiada wersji v${VERSION}.`);
+}
 
 // Klucz publiczny przypinajacy ID rozszerzenia w przegladarkach Chromium.
 // Bez niego Chrome liczy ID ze sciezki katalogu, a przeniesienie folderu
@@ -86,6 +98,7 @@ function manifestFor(target) {
     browser_specific_settings: {
       gecko: {
         id: 'frogsync@frogsync.local',
+        update_url: 'https://zaba44.github.io/frogsync/updates.json',
         strict_min_version: '128.0',
         data_collection_permissions: { required: ['none'], optional: [] },
       },

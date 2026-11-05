@@ -43,7 +43,7 @@ async function run(): Promise<SyncStatus> {
 
 async function paintBadge(status: SyncStatus): Promise<void> {
   try {
-    const error = status.connection === 'error' || !!status.lastError;
+    const error = status.connection === 'error' || status.connection === 'outdated' || !!status.lastError;
     const blocked = !!(status.blockedDeletions || status.blockedLocalDeletions);
     const attention = error ? '×' : blocked ? '!' :
       status.connection === 'offline' || status.connection === 'cert' ? '×' :
@@ -56,6 +56,7 @@ async function paintBadge(status: SyncStatus): Promise<void> {
     });
 
     const titles: Record<SyncStatus['connection'], string> = {
+      outdated: 'FrogSync — wymagana aktualizacja wtyczki',
       ok: 'FrogSync — zsynchronizowane',
       offline: 'FrogSync — serwer nie odpowiada',
       cert: 'FrogSync — przeglądarka nie ufa certyfikatowi serwera',

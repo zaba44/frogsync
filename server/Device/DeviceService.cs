@@ -159,6 +159,17 @@ public sealed class DeviceService(Database db, Limiters limiters)
         return identity.Item1;
     }
 
+    public Task SaveExtensionVersionAsync(string deviceId, string version)
+    {
+        if (!ExtensionVersions.IsValid(version))
+            throw new ArgumentException("Nieprawidlowa wersja rozszerzenia.");
+
+        return db.WriteAsync((c, tx) => Database.Exec(c, """
+            UPDATE devices SET extension_version = @v
+            WHERE id = @id AND revoked_at IS NULL AND extension_version <> @v
+            """, tx, ("@v", version), ("@id", deviceId)));
+    }
+
     public Task SaveCursorAsync(string deviceId, long cursor) => db.WriteAsync((c, tx) =>
         Database.Exec(c, "UPDATE devices SET cursor = MAX(cursor, @c) WHERE id = @id", tx, ("@c", cursor), ("@id", deviceId)));
 

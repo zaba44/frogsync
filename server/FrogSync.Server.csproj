@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <EmbeddedResource Include="../extension/package.json"
+                      LogicalName="FrogSync.Release.json" />
   </ItemGroup>
 
 </Project>

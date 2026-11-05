@@ -384,6 +384,115 @@ await scenario('serwer niedostepny: zmiany czekaja i wychodza po powrocie', asyn
   expect(b.bookmarks.find('Offline'), 'zmiana z czasu bez serwera nie dotarla');
 });
 
+await scenario('minimum wersji: outdated zatrzymuje caly przebieg i zachowuje prace do aktualizacji', async () => {
+  const a = await newBrowser('Version A', 'chromium', 'Wersje rozszerzenia', device => {
+    add(device, 'Do zmiany', 'https://version-e2e.example/edit');
+    add(device, 'Do usuniecia', 'https://version-e2e.example/delete');
+  });
+  const b = await newBrowser('Version B', 'gecko', 'Wersje rozszerzenia');
+  await converge(a, b);
+
+  use(a);
+  const storage = await import('../src/storage.js');
+  const state = await getLocal<any>('engineState', null);
+  const old = a.bookmarks.find('Do zmiany')!;
+  const removed = a.bookmarks.find('Do usuniecia')!;
+  const sid = state.mapping.l2s[old.id];
+  const operation = {
+    clientOpId: crypto.randomUUID(), type: 'update', nodeId: sid,
+    title: 'Zmieniona offline', baseVersion: state.known[sid].version,
+  };
+  a.bookmarks.update(old.id, { title: 'Zmieniona offline' });
+  a.bookmarks.removeTree(removed.id);
+  add(a, 'Dodana offline', 'https://version-e2e.example/new');
+  await storage.setLocal({ engineState: { ...state, outbox: [operation] } });
+
+  const beforeState = JSON.stringify(await getLocal('engineState', null));
+  const beforeTree = JSON.stringify(a.bookmarks.getTree());
+  const realFetch = globalThis.fetch;
+  let nonHello = 0;
+  let sentVersion = '';
+  let helloCount = 0;
+
+  // Atrapa zmienia tylko wymagania zwracane przez prawdziwe hello.
+  // Egzekwowanie minimum po stronie serwera pokrywa test C#.
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes('/api/v1/')) {
+      if (!url.includes('/api/v1/hello')) nonHello++;
+      else {
+        helloCount++;
+        sentVersion = new Headers(init?.headers).get('X-FrogSync-Version') ?? '';
+        const response = await realFetch(input, init);
+        if (!response.ok) return response;
+        const json = await response.json();
+        return new Response(JSON.stringify({
+          ...json, minExtensionVersion: '0.3.2', latestExtensionVersion: '0.3.10',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+    return realFetch(input, init);
+  };
+
+  try {
+    const blocked = await syncOnce();
+    expect(blocked.connection === 'outdated' && !!blocked.lastError, 'brak jawnego outdated');
+    expect(blocked.pendingOps === 1 && blocked.minExtensionVersion === '0.3.2',
+      'status zgubil kolejke albo wymaganie wersji');
+    expect(helloCount === 1 && nonHello === 0 && sentVersion === '0.3.1',
+      'stary klient wyslal cos poza hello albo nie zglosil wersji');
+    expect(JSON.stringify(await getLocal('engineState', null)) === beforeState,
+      'outdated zmienilo stan lub kolejke silnika');
+    expect(JSON.stringify(a.bookmarks.getTree()) === beforeTree, 'outdated zmienilo zakladki');
+
+    a.extensionVersion = '0.3.2';
+    const resumed = await syncOnce();
+    expect(resumed.connection === 'ok' && !resumed.lastError && resumed.pendingOps === 0,
+      'po aktualizacji nie wznowiono synchronizacji');
+    expect(resumed.updateAvailable && resumed.latestExtensionVersion === '0.3.10',
+      'brak dyskretnego powiadomienia o nowszej wersji');
+    expect((sentVersion as string) === '0.3.2', 'naglowek nie odczytuje biezacej wersji manifestu');
+
+    // Przywracamy siec przed przejsciem na B, aby jej wersja nie byla blokowana atrapa.
+    globalThis.fetch = realFetch;
+    await converge(a, b);
+    expect(b.bookmarks.find('Zmieniona offline') && b.bookmarks.find('Dodana offline'),
+      'po aktualizacji nie dotarly zachowane edycje');
+    expect(!a.bookmarks.find('Do usuniecia') && !b.bookmarks.find('Do usuniecia'),
+      'lokalne usuniecie wrocilo po aktualizacji');
+  } finally {
+    globalThis.fetch = realFetch;
+    a.extensionVersion = '0.3.1';
+  }
+});
+
+await scenario('wersja aktualna: informacja o dostepnej aktualizacji znika bez zmiany sesji', async () => {
+  const a = await newBrowser('Version current', 'gecko', 'Wersje aktualna');
+  use(a);
+  const beforeSession = JSON.stringify(await getLocal(KEYS.server, null));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!url.includes('/api/v1/hello') || !response.ok) return response;
+    const json = await response.json();
+    return new Response(JSON.stringify({
+      ...json, minExtensionVersion: '0.3.1', latestExtensionVersion: '0.3.10',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    expect((await sync(a)).updateAvailable, 'brak informacji o nowszej wersji');
+    a.extensionVersion = '0.3.10';
+    const current = await sync(a);
+    expect(!current.updateAvailable && current.connection === 'ok', 'wersje porownywane sa tekstowo');
+    expect(JSON.stringify(await getLocal(KEYS.server, null)) === beforeSession,
+      'sprawdzenie wersji zmienilo sesje');
+  } finally {
+    globalThis.fetch = realFetch;
+    a.extensionVersion = '0.3.1';
+  }
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

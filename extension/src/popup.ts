@@ -1,4 +1,5 @@
 import { wx } from './wx.js';
+import { UPDATE_URL } from './extension-version.js';
 import type { ConflictNote, ConnectionState, Message, ServerSession, SyncStatus } from './types.js';
 
 // Popup tylko pokazuje stan i zleca — cala praca dzieje sie w tle.
@@ -8,6 +9,7 @@ const send = async <T>(m: Message) => await wx.runtime.sendMessage(m) as T;
 
 const TEXT: Record<ConnectionState, [string, string, string]> = {
   ok:              ['Zsynchronizowane', '', 'ok'],
+  outdated:        ['Wymagana aktualizacja', 'Serwer wymaga nowszej wersji wtyczki — zaktualizuj FrogSync. Twoje zakładki i oczekujące zmiany pozostają zachowane.', 'error'],
   error:           ['Synchronizacja nieudana', 'Sprawdź komunikat i spróbuj ponownie.', 'error'],
   unpaired:        ['Nie połączono z serwerem', 'Otwórz Ustawienia i wpisz adres serwera oraz kod parowania z panelu FrogSync.', 'idle'],
   offline:         ['Serwer nie odpowiada', 'Zmiany czekają w przeglądarce i wyjdą same, gdy serwer wróci. Sprawdź połączenie lub VPN.', 'error'],
@@ -42,6 +44,21 @@ function render(status: SyncStatus, server: ServerSession | null, conflicts: Con
 
   const banners = $('banners');
   banners.replaceChildren();
+  if (server && (status.connection === 'outdated' || status.updateAvailable)) {
+    const box = document.createElement('div');
+    box.className = status.connection === 'outdated' ? 'banner error' : 'hint';
+    const text = document.createElement('span');
+    text.textContent = status.connection === 'outdated'
+      ? `Wymagana wersja: ${status.minExtensionVersion || 'zgodna z serwerem'}. `
+      : `Dostępna nowa wersja${status.latestExtensionVersion ? ': ' + status.latestExtensionVersion : ''}. `;
+    const link = document.createElement('a');
+    link.href = UPDATE_URL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Pobierz aktualizację';
+    box.append(text, link);
+    banners.append(box);
+  }
   const brakeBanner = (count: number, which: 'remote' | 'local', headline: string, detail: string, action: string) => {
     const box = document.createElement('div');
     box.className = 'banner warn';

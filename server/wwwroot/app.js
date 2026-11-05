@@ -241,7 +241,16 @@ function renderDevices() {
     body.append(el('tr', { class: revoked ? 'revoked' : '' },
       el('td', {}, d.name),
       el('td', {}, profileName(d.profileId)),
-      el('td', { class: 'muted' }, d.browser || '—'),
+      el('td', { class: 'muted' },
+        el('div', {}, d.browser || '—'),
+        el('div', {
+          class: d.extensionVersionStatus === 'incompatible' ? 'badge bad' : 'muted small',
+        }, 'FrogSync ' + (d.extensionVersion || '—') + ' · ' + ({
+          current: 'aktualna',
+          update: 'do aktualizacji',
+          incompatible: 'niezgodna',
+          unknown: 'wersja niezgłoszona',
+        }[d.extensionVersionStatus] || 'wersja niezgłoszona'))),
       el('td', { class: 'muted', title: d.lastIp || '' }, when(d.lastSeenAt)),
       el('td', {}, behind),
       el('td', {}, revoked ? el('span', { class: 'muted small' }, 'odwołane') : el('div', { class: 'actions' },

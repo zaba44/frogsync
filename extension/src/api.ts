@@ -1,3 +1,5 @@
+import { wx } from './wx.js';
+import { compareVersions, validVersion } from './extension-version.js';
 import type { ChangesResponse, OpsResponse, PlannedOp, ServerSession } from './types.js';
 
 export const PROTOCOL = 3;
@@ -13,11 +15,26 @@ export class ProfileChanged extends Error {
 export class ServerError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string) { super(message); }
 }
+export class Outdated extends ServerError {
+  constructor(
+    public readonly minimum = '',
+    public readonly latest = '',
+    message = 'Serwer wymaga nowszej wersji wtyczki — zaktualizuj FrogSync.',
+  ) {
+    super(409, 'OUTDATED_CLIENT', message);
+  }
+}
 
 const TIMEOUT_MS = 30_000;
 
+export function extensionVersion(): string {
+  const version = wx.runtime.getManifest().version;
+  if (!validVersion(version)) throw new Error('Manifest wtyczki ma nieprawidłowy numer wersji.');
+  return version;
+}
+
 async function call<T>(base: string, path: string, init: RequestInit & { token?: string }): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { 'X-FrogSync-Version': extensionVersion() };
   if (init.token) headers['Authorization'] = `Bearer ${init.token}`;
   if (init.body !== undefined) headers['Content-Type'] = 'application/json';
 
@@ -32,20 +49,22 @@ async function call<T>(base: string, path: string, init: RequestInit & { token?:
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
-    // Fetch nie rozroznia awarii sieci od problemu z certyfikatem.
     throw new Offline(err instanceof Error ? err.message : String(err));
   }
 
   let payload: unknown = null;
   try { payload = await response.json(); } catch { /* pusta odpowiedz (204) */ }
-  const body = (payload ?? {}) as { error?: string; message?: string; generation?: string; hasContent?: boolean };
+  const body = (payload ?? {}) as {
+    error?: string; message?: string; generation?: string; hasContent?: boolean;
+    minExtensionVersion?: string; latestExtensionVersion?: string;
+  };
 
   if (response.status === 401) throw new Unauthorized(body.message ?? 'Token odrzucony');
   if (response.status === 409 && body.error === 'RESET_REQUIRED') throw new ResetRequired(body.generation ?? '');
   if (response.status === 409 && body.error === 'PROFILE_CHANGED') throw new ProfileChanged(!!body.hasContent);
   if (response.status === 409 && body.error === 'OUTDATED_CLIENT') {
-    throw new ServerError(409, 'OUTDATED_CLIENT',
-      body.message ?? 'Zaktualizuj wtyczkę FrogSync i przeładuj ją na stronie rozszerzeń.');
+    throw new Outdated(body.minExtensionVersion ?? '', body.latestExtensionVersion ?? '',
+      body.message ?? 'Serwer wymaga nowszej wersji wtyczki — zaktualizuj FrogSync.');
   }
   if (!response.ok) throw new ServerError(response.status, body.error ?? 'HTTP_' + response.status, body.message ?? `HTTP ${response.status}`);
   return payload as T;
@@ -62,6 +81,8 @@ export interface HelloResponse {
   version: string;
   protocol?: number;
   minProtocol?: number;
+  minExtensionVersion?: string;
+  latestExtensionVersion?: string;
   device: { id: string; name: string };
   profile: { id: string; name: string };
   head: number;
@@ -76,20 +97,28 @@ export interface PreviewResponse {
   previewId?: string;
 }
 
-/** Sprawdza kod i stan profilu bez zuzywania kodu. */
 export function preview(url: string, code: string): Promise<PreviewResponse> {
   return call(url, '/api/v1/pair/preview', { method: 'POST', body: JSON.stringify({ code }) });
 }
 
-/** Inny stan profilu zwraca ProfileChanged bez zuzycia kodu. */
 export function pair(url: string, code: string, browser: string, expectContent?: boolean): Promise<PairResponse> {
   return call(url, '/api/v1/pair', { method: 'POST', body: JSON.stringify({ code, browser, expectContent }) });
 }
 
+/** Pobranie bez walidacji sluzy tylko do trwalego zapisania nowego parowania. */
+export function helloInfo(session: ServerSession): Promise<HelloResponse> {
+  return call(session.url, '/api/v1/hello', { token: session.token });
+}
+
 export async function hello(session: ServerSession): Promise<HelloResponse> {
-  const info = await call<HelloResponse>(session.url, '/api/v1/hello', { token: session.token });
-  if ((info.minProtocol ?? 0) > PROTOCOL) {
-    throw new ServerError(409, 'OUTDATED_CLIENT', 'Zaktualizuj wtyczkę FrogSync i przeładuj ją na stronie rozszerzeń.');
+  const info = await helloInfo(session);
+  const minimum = info.minExtensionVersion ?? '';
+  const latest = info.latestExtensionVersion ?? '';
+  if ((minimum && !validVersion(minimum)) || (latest && !validVersion(latest))) {
+    throw new ServerError(502, 'INVALID_VERSION_POLICY', 'Serwer podał nieprawidłowe wymagania wersji.');
+  }
+  if ((minimum && compareVersions(extensionVersion(), minimum) < 0) || (info.minProtocol ?? 0) > PROTOCOL) {
+    throw new Outdated(minimum, latest);
   }
   return info;
 }
@@ -99,7 +128,6 @@ export function changes(session: ServerSession, after: number, limit = 1000): Pr
   return call(session.url, '/api/v1/changes' + q, { token: session.token });
 }
 
-/** Serwer sprawdza generacje wewnatrz transakcji zapisu. */
 export function sendOps(session: ServerSession, ops: PlannedOp[]): Promise<OpsResponse> {
   return call(session.url, '/api/v1/ops', {
     method: 'POST', token: session.token,

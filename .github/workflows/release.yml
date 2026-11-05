@@ -1,0 +1,365 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+# Wydanie i kanal aktualizacji sa publikowane kolejno.
+# Nie przerywamy podpisywania przez wypchniecie kolejnego tagu.
+concurrency:
+  group: frogsync-production-release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Validate tag and run tests
+    if: github.repository == 'zaba44/frogsync' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+
+          const pkg = JSON.parse(readFileSync('extension/package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync('extension/package-lock.json', 'utf8'));
+          const pattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+          if (!pattern.test(pkg.version) || process.env.GITHUB_REF_NAME !== `v${pkg.version}`) {
+            throw new Error('Tag musi miec postac vX.Y.Z i odpowiadac package.json.');
+          }
+          if (lock.version !== pkg.version || lock.packages?.['']?.version !== pkg.version) {
+            throw new Error('Zaktualizuj i zatwierdz package-lock.json razem z package.json.');
+          }
+          if (pkg.devDependencies?.['web-ext'] !== '10.8.0' ||
+              lock.packages?.['node_modules/web-ext']?.version !== '10.8.0') {
+            throw new Error('Wymagany jest web-ext 10.8.0 w package.json i lockfile.');
+          }
+
+          const compare = (a, b) => {
+            const aa = a.slice(1).split('.').map(Number);
+            const bb = b.slice(1).split('.').map(Number);
+            for (let i = 0; i < 3; i++) if (aa[i] !== bb[i]) return aa[i] - bb[i];
+            return 0;
+          };
+          const tags = execFileSync('git', ['tag', '--list'], { encoding: 'utf8' })
+            .trim().split(/\s+/).filter(tag => pattern.test(tag.slice(1)) && tag.startsWith('v'))
+            .sort(compare);
+
+          if (tags.at(-1) !== process.env.GITHUB_REF_NAME) {
+            throw new Error('Nie publikujemy starszego tagu nad nowszym kanalem aktualizacji.');
+          }
+          NODE
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Server tests
+        run: dotnet run --project tests/FrogSync.Tests
+
+      - name: Extension tests
+        working-directory: extension
+        run: npm test
+
+  release:
+    name: Sign Firefox and publish release
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Build packages
+        working-directory: extension
+        run: npm run build:zip
+
+      - name: Prepare source archive for Mozilla
+        shell: bash
+        run: |
+          mkdir -p release-files signed
+          git archive --format=zip --output=release-source.zip HEAD
+
+      - name: Sign Firefox package
+        working-directory: extension
+        timeout-minutes: 65
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        shell: bash
+        run: |
+          test -n "$WEB_EXT_API_KEY"
+          test -n "$WEB_EXT_API_SECRET"
+
+          ./node_modules/.bin/web-ext sign \
+            --channel=unlisted \
+            --source-dir=build/firefox \
+            --artifacts-dir=../signed \
+            --upload-source-code=../release-source.zip \
+            --approval-timeout=3600000
+
+      - name: Validate signed XPI and prepare artifacts
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import shutil
+          import zipfile
+
+          root = pathlib.Path('.')
+          version = json.loads((root / 'extension/package.json').read_text())['version']
+          if os.environ['GITHUB_REF_NAME'] != 'v' + version:
+              raise RuntimeError('Niezgodna wersja tagu.')
+
+          candidates = list((root / 'signed').glob('*.xpi'))
+          if len(candidates) != 1:
+              raise RuntimeError('Oczekiwano dokladnie jednego podpisanego XPI.')
+
+          with zipfile.ZipFile(candidates[0]) as archive:
+              manifest = json.loads(archive.read('manifest.json'))
+              names = {name.lower() for name in archive.namelist()}
+              if 'meta-inf/mozilla.rsa' not in names and 'meta-inf/cose.sig' not in names:
+                  raise RuntimeError('XPI nie zawiera plikow podpisu Mozilli.')
+              gecko = manifest['browser_specific_settings']['gecko']
+              if manifest['version'] != version or gecko['id'] != 'frogsync@frogsync.local':
+                  raise RuntimeError('Nieprawidlowa wersja lub ID podpisanej paczki.')
+              if gecko.get('update_url') != 'https://zaba44.github.io/frogsync/updates.json':
+                  raise RuntimeError('Podpisana paczka ma nieprawidlowy update_url.')
+
+          out = root / 'release-files'
+          shutil.copyfile(candidates[0], out / f'frogsync-{version}-firefox.xpi')
+          shutil.copyfile(root / 'extension/dist/chrome-extension.zip',
+                          out / f'frogsync-{version}-chromium.zip')
+          shutil.copyfile(root / 'release-source.zip',
+                          out / f'frogsync-{version}-source.zip')
+
+          lines = []
+          for path in sorted(out.iterdir()):
+              lines.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}')
+          (out / 'SHA256SUMS.txt').write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Create draft and upload verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Istniejace opublikowane wydanie jest niemodyfikowalne w tym workflow.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft > release-state.json 2>/dev/null; then
+            node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          if (!JSON.parse(readFileSync('release-state.json', 'utf8')).isDraft) {
+            throw new Error('Wydanie juz opublikowane. Dla Pages ponow tylko nieudany job; kod wydaj pod nowa wersja.');
+          }
+          NODE
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --draft \
+              --title "FrogSync $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" release-files/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+
+      - name: Save files for update manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: release-files/
+          if-no-files-found: error
+          retention-days: 30
+
+  pages-build:
+    name: Prepare Firefox update manifest
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download verified artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: release-files
+
+      - name: Generate updates.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.request
+
+          tag = os.environ['GITHUB_REF_NAME']
+          version = tag.removeprefix('v')
+          filename = f'frogsync-{version}-firefox.xpi'
+          path = pathlib.Path('release-files') / filename
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          url = f'https://github.com/zaba44/frogsync/releases/download/{tag}/{filename}'
+
+          # Sprawdzamy publiczny plik, nie sam sukces zaladowania przez API.
+          with urllib.request.urlopen(url, timeout=120) as response:
+              remote_hash = hashlib.sha256()
+              while chunk := response.read(1024 * 1024):
+                  remote_hash.update(chunk)
+          if remote_hash.hexdigest() != digest:
+              raise RuntimeError('Publiczny XPI nie odpowiada podpisanemu plikowi.')
+
+          feed_url = 'https://zaba44.github.io/frogsync/updates.json'
+          request = urllib.request.Request(feed_url, headers={'Cache-Control': 'no-cache'})
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  previous = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              previous = None
+
+          if previous is not None:
+              updates = previous['addons']['frogsync@frogsync.local']['updates']
+              current = tuple(map(int, version.split('.')))
+              for update in updates:
+                  old = tuple(map(int, update['version'].split('.')))
+                  if old > current:
+                      raise RuntimeError('Kanal Pages ma juz nowsza wersje; nie cofamy go.')
+
+          output = pathlib.Path('pages')
+          output.mkdir()
+          manifest = {
+              'addons': {
+                  'frogsync@frogsync.local': {
+                      'updates': [{
+                          'version': version,
+                          'update_link': url,
+                          'update_hash': 'sha256:' + digest,
+                      }]
+                  }
+              }
+          }
+          (output / 'updates.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          (output / 'index.html').write_text(
+              '<!doctype html><html lang="pl"><meta charset="utf-8">'
+              '<title>Aktualizacje FrogSync</title>'
+              '<p><a href="https://github.com/zaba44/frogsync/releases/latest">'
+              'Pobierz najnowszy FrogSync</a></p></html>\n'
+          )
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+  pages-deploy:
+    name: Publish Firefox update manifest
+    needs: pages-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  server-image:
+    name: Publish server image to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Wersja z tagu i "latest"; w Portainerze wskazujemy konkretna wersje
+          tags: |
+            ghcr.io/zaba44/frogsync-server:${{ github.ref_name }}
+            ghcr.io/zaba44/frogsync-server:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/zaba44/frogsync
+            org.opencontainers.image.version=${{ github.ref_name }}

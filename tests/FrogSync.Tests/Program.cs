@@ -1121,6 +1121,144 @@ try
         await isolated.Post(isolated.Anonymous, "/api/v1/pair", new { code = nextCode }, 429);
     });
 
+    await h.Run("wersje: hello, zapis urzadzenia, minimum i wznowienie po aktualizacji", async () =>
+    {
+        // Osobny serwer z minimum, bez zmiany konfiguracji glownego zestawu.
+        var directory = Path.Combine(Path.GetTempPath(), "FrogSync-VersionTests-" + Guid.NewGuid().ToString("N"));
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+
+        var versionConfig = new AppConfig
+        {
+            DataDir = directory,
+            CertPath = Path.Combine(directory, "missing.pfx"),
+            Port = port,
+            MinExtensionVersion = "0.3.2",
+            LatestExtensionVersion = "0.3.10",
+            BackupInterval = TimeSpan.FromDays(1),
+        };
+        await using var versionApp = ServerHost.Build(versionConfig);
+        try
+        {
+            await versionApp.StartAsync();
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                UseProxy = false,
+            };
+            using var client = new HttpClient(handler)
+            {
+                BaseAddress = new Uri($"https://127.0.0.1:{port}/"),
+            };
+
+            var adminService = versionApp.Services.GetRequiredService<FrogSync.Server.Admin.AdminService>();
+            var deviceService = versionApp.Services.GetRequiredService<FrogSync.Server.Device.DeviceService>();
+            var database = versionApp.Services.GetRequiredService<Database>();
+            var profileId = await adminService.CreateProfileAsync("Version test", "127.0.0.1");
+            var pairCode = await deviceService.CreatePairingCodeAsync(profileId, "Test wersji", "127.0.0.1");
+            using var pairResponse = await client.PostAsJsonAsync("/api/v1/pair",
+                new { code = pairCode.Code, browser = "test" });
+            pairResponse.EnsureSuccessStatusCode();
+            var pairJson = JsonDocument.Parse(await pairResponse.Content.ReadAsStringAsync()).RootElement.Clone();
+            var deviceId = pairJson.GetProperty("deviceId").GetString()!;
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", pairJson.GetProperty("token").GetString());
+
+            void SetVersion(string? version)
+            {
+                client.DefaultRequestHeaders.Remove(ExtensionVersions.Header);
+                if (version is not null) client.DefaultRequestHeaders.Add(ExtensionVersions.Header, version);
+            }
+
+            async Task<JsonElement> ReadHello()
+            {
+                using var response = await client.GetAsync("/api/v1/hello");
+                response.EnsureSuccessStatusCode();
+                using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                return json.RootElement.Clone();
+            }
+
+            SetVersion("0.3.1");
+            var hello = await ReadHello();
+            Expect(hello.GetProperty("minExtensionVersion").GetString() == "0.3.2" &&
+                hello.GetProperty("latestExtensionVersion").GetString() == "0.3.10",
+                "Hello nie podaje polityki wersji.");
+            Expect(database.Read(c => Database.Scalar(c,
+                "SELECT extension_version FROM devices WHERE id = @id", null, ("@id", deviceId))) as string == "0.3.1",
+                "Nie zapisano wersji urzadzenia.");
+
+            string DeviceVersionStatus()
+            {
+                using var state = JsonSerializer.SerializeToDocument(adminService.State(),
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                return state.RootElement.GetProperty("devices").EnumerateArray()
+                    .Single(d => d.GetProperty("id").GetString() == deviceId)
+                    .GetProperty("extensionVersionStatus").GetString()!;
+            }
+
+            Expect(DeviceVersionStatus() == "incompatible", "Panel nie oznacza niezgodnego urzadzenia.");
+            var generation = hello.GetProperty("generation").GetString()!;
+            var head = hello.GetProperty("head").GetInt64();
+            var nodeId = Guid.NewGuid().ToString();
+            var operation = new SyncOp
+            {
+                ClientOpId = Guid.NewGuid().ToString(), Type = "create", NodeId = nodeId,
+                Kind = "bookmark", ParentId = "root:toolbar",
+                Title = "Po aktualizacji", Url = "https://version.example/",
+            };
+
+            using (var blocked = await client.PostAsJsonAsync("/api/v1/ops",
+                new { generation, protocol = 3, ops = new[] { operation } }))
+            {
+                Expect((int)blocked.StatusCode == 409, "Stary klient nie zostal zatrzymany.");
+                using var json = JsonDocument.Parse(await blocked.Content.ReadAsStringAsync());
+                Expect(json.RootElement.GetProperty("error").GetString() == "OUTDATED_CLIENT",
+                    "Brak OUTDATED_CLIENT.");
+            }
+            using (var changes = await client.GetAsync("/api/v1/changes?after=0"))
+                Expect((int)changes.StatusCode == 409, "Stary klient nadal pobiera zmiany.");
+
+            var sync = versionApp.Services.GetRequiredService<FrogSync.Server.Sync.SyncService>();
+            Expect(sync.Head(profileId) == head, "Zablokowana operacja zmienila dziennik.");
+
+            SetVersion(null);
+            using (var missing = await client.PostAsJsonAsync("/api/v1/ops",
+                new { generation, protocol = 3, ops = new[] { operation } }))
+                Expect((int)missing.StatusCode == 409, "Brak naglowka ominal minimum.");
+
+            SetVersion("0.3.2");
+            await ReadHello();
+            Expect(DeviceVersionStatus() == "update", "Panel nie pokazuje dostepnej aktualizacji.");
+            using (var applied = await client.PostAsJsonAsync("/api/v1/ops",
+                new { generation, protocol = 3, ops = new[] { operation } }))
+            {
+                applied.EnsureSuccessStatusCode();
+                using var json = JsonDocument.Parse(await applied.Content.ReadAsStringAsync());
+                var result = json.RootElement.GetProperty("results")[0];
+                Expect(result.GetProperty("status").GetString() == "applied" &&
+                    !result.GetProperty("duplicate").GetBoolean(),
+                    "Zablokowana proba zajela clientOpId albo operacja nie wrocila po aktualizacji.");
+            }
+
+            SetVersion("0.3.10");
+            await ReadHello();
+            Expect(DeviceVersionStatus() == "current", "Porownanie wersji jest tekstowe zamiast liczbowe.");
+
+            Expect(ExtensionVersions.Compare("0.3.10", "0.3.2") > 0 &&
+                !ExtensionVersions.IsValid("0.03.2") &&
+                !string.IsNullOrEmpty(ExtensionVersions.BuiltInVersion),
+                "Niepoprawna walidacja lub wbudowana wersja wydania.");
+        }
+        finally
+        {
+            await versionApp.StopAsync();
+            SqliteConnection.ClearAllPools();
+            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        }
+    });
+
     await h.Run("ops: poprawna generacja jest wymagana, stara wymusza reset", async () =>
     {
         var hello = await h.Get(deviceA.Client, "/api/v1/hello");

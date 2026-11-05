@@ -45,15 +45,21 @@ public static class DeviceEndpoints
 
         var authed = api.MapGroup("").AddEndpointFilter(RequireDevice);
 
-        authed.MapGet("/hello", (HttpContext http, SyncService sync) =>
+        authed.MapGet("/hello", async (HttpContext http, SyncService sync, DeviceService devices, AppConfig config) =>
         {
             var device = Device(http);
+            var extensionVersion = http.Request.Headers[ExtensionVersions.Header].ToString();
+            if (ExtensionVersions.IsValid(extensionVersion))
+                await devices.SaveExtensionVersionAsync(device.DeviceId, extensionVersion);
+
             return Results.Ok(new
             {
                 server = "FrogSync",
                 version = Version,
                 protocol = Protocol,
                 minProtocol = MinProtocol,
+                minExtensionVersion = config.MinExtensionVersion,
+                latestExtensionVersion = config.LatestExtensionVersion,
                 device = new { id = device.DeviceId, name = device.DeviceName },
                 profile = new { id = device.ProfileId, name = device.ProfileName },
                 head = sync.Head(device.ProfileId),
@@ -135,6 +141,26 @@ public static class DeviceEndpoints
         var identity = http.RequestServices.GetRequiredService<DeviceService>().Authenticate(token, Ip(http));
         if (identity is null)
             return Results.Json(new { error = "UNAUTHORIZED", message = "Brak waznego tokenu urzadzenia" }, statusCode: 401);
+
+        var extensionVersion = http.Request.Headers[ExtensionVersions.Header].ToString();
+        if (extensionVersion.Length > 0 && !ExtensionVersions.IsValid(extensionVersion))
+            return Results.Json(new
+            {
+                error = "INVALID_EXTENSION_VERSION",
+                message = "Nieprawidłowy numer wersji wtyczki. Zaktualizuj FrogSync.",
+            }, statusCode: 400);
+
+        var config = http.RequestServices.GetRequiredService<AppConfig>();
+        // Hello pozostaje dostepne: stary klient odczyta wymagania i zglosi wersje.
+        if (http.Request.Path != "/api/v1/hello" &&
+            ExtensionVersions.IsTooOld(extensionVersion, config.MinExtensionVersion))
+            return Results.Json(new
+            {
+                error = "OUTDATED_CLIENT",
+                message = ExtensionVersions.UpdateMessage,
+                minExtensionVersion = config.MinExtensionVersion,
+                latestExtensionVersion = config.LatestExtensionVersion,
+            }, statusCode: 409);
 
         http.Items[nameof(DeviceIdentity)] = identity;
         return await next(ctx);

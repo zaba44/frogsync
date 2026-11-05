@@ -15,6 +15,7 @@ public static class ServerHost
 {
     public static WebApplication Build(AppConfig config, Action<WebApplicationBuilder>? customize = null)
     {
+        ExtensionVersions.Validate(config);
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "yyyy-MM-dd HH:mm:ss "; });
 

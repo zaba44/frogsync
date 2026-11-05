@@ -23,6 +23,12 @@ public sealed class AppConfig
     /// <summary>Dodatkowy katalog na kopie (np. folder Nextcloud). Kopie trafiaja tam PO zapisaniu lokalnym, poza obsluga zadan.</summary>
     public string? BackupExtraDir { get; init; }
 
+    /// <summary>Puste minimum nie blokuje starszych wydan.</summary>
+    public string MinExtensionVersion { get; init; } = "";
+
+    /// <summary>Wersja rozszerzenia odpowiadajaca wydaniu serwera.</summary>
+    public string LatestExtensionVersion { get; init; } = ExtensionVersions.BuiltInVersion;
+
     public int BackupKeep { get; init; } = 30;
     public TimeSpan BackupInterval { get; init; } = TimeSpan.FromHours(6);
 
@@ -41,6 +47,7 @@ public sealed class AppConfig
             CertPassword   = Env("FROGSYNC_CERT_PASSWORD"),
             AllowPublic    = IsTrue(Env("FROGSYNC_ALLOW_PUBLIC")),
             BackupExtraDir = Env("FROGSYNC_BACKUP_EXTRA"),
+            MinExtensionVersion = Env("FROGSYNC_MIN_EXTENSION") ?? "",
             BackupKeep     = int.TryParse(Env("FROGSYNC_BACKUP_KEEP"), out var keep) && keep > 0 ? keep : 30,
         };
     }

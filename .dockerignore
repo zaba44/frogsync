@@ -5,3 +5,9 @@ tests
 deploy
 *.md
 .git
+extension/node_modules
+extension/build
+extension/dist
+extension/.bundle
+bookmarks_*.html
+zakladki_*.html
