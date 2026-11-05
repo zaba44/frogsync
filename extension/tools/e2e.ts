@@ -881,6 +881,262 @@ await scenario('Opera: nowa karta ze Speed Dialem przestawiona tylko gdy wolno',
   }
 });
 
+function arrangeOrderTest(device: FakeDevice, titles: string[]): void {
+  for (const [index, title] of titles.entries()) {
+    device.bookmarks.move(device.bookmarks.find(title)!.id,
+      { parentId: tb(device), index });
+  }
+}
+
+async function orderTestPair(label: string, count = 8): Promise<[FakeDevice, FakeDevice, string[]]> {
+  const titles = Array.from({ length: count }, (_, i) => `${label} ${i}`);
+  const a = await newBrowser(`${label} A`, 'chromium', label, device => {
+    titles.forEach((title, i) => add(device, title, `https://order-safe.example/${label}/${i}`));
+  });
+  const b = await newBrowser(`${label} B`, 'gecko', label);
+  await converge(a, b);
+  return [a, b, titles];
+}
+
+await scenario('kolejnosc: lokalny ruch podczas pull zostaje przy zdalnej edycji tytulu', async () => {
+  const [a, b, titles] = await orderTestPair('Order merge', 5);
+  use(b);
+  b.bookmarks.update(b.bookmarks.find(titles[0])!.id, { title: 'Order merge zmieniony tytul' });
+  await sync(b);
+
+  use(a);
+  const desired = [titles[4], ...titles.slice(0, 4)];
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      arrangeOrderTest(a, desired);
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    same(a.bookmarks.titles(tb(a)),
+      desired.map(title => title === titles[0] ? 'Order merge zmieniony tytul' : title),
+      'lokalna kolejnosc po pull');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  same(a.bookmarks.titles(tb(a)), b.bookmarks.titles(tb(b)), 'kolejnosc po scaleniu');
+});
+
+await scenario('kolejnosc: konflikt zachowuje uklad do odzyskania przez istniejacy przycisk', async () => {
+  const engine = await import('../src/engine.js');
+  const { conflictId } = await import('../src/conflict-id.js');
+  const [a, b, titles] = await orderTestPair('Order conflict', 5);
+  const remote = [titles[1], titles[0], ...titles.slice(2)];
+  const local = [titles[4], ...titles.slice(0, 4)];
+
+  use(b);
+  arrangeOrderTest(b, remote);
+  await sync(b);
+  use(a);
+
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      arrangeOrderTest(a, local);
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    same(a.bookmarks.titles(tb(a)), remote, 'wersja serwera po konflikcie kolejnosci');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  use(a);
+  const note = (await conflictNotes()).find(item => item.reason === 'order-changed' && item.rejectedPlacement?.order);
+  expect(note?.rejectedPlacement?.order, 'brak zapisanej kolejnosci');
+  expect(note.rejectedPlacement.nodeId === 'root:toolbar', 'konflikt nie wskazuje korzenia paska');
+
+  const status = await engine.restoreConflict(conflictId(note));
+  expect(status.connection === 'ok' && !status.lastError, 'nie udalo sie odzyskac kolejnosci');
+  await converge(a, b);
+  same(a.bookmarks.titles(tb(a)), local, 'odzyskana kolejnosc w A');
+  same(b.bookmarks.titles(tb(b)), local, 'odzyskana kolejnosc w B');
+
+  use(a);
+  const session = await getLocal<any>(KEYS.server, null);
+  const head = (await api.hello(session)).head;
+  await engine.restoreConflict(conflictId(note));
+  expect((await api.hello(session)).head === head, 'powtorne odzyskanie wykonalo druga operacje');
+});
+
+await scenario('kolejnosc: przerwanie po dwoch ruchach wznawia dziennik bez odeslania polowy ukladu', async () => {
+  const [a, b, titles] = await orderTestPair('Order partial');
+  const desired = [...titles].reverse();
+  use(b);
+  arrangeOrderTest(b, desired);
+  await sync(b);
+
+  use(a);
+  a.bookmarks.crashAfter = 2;
+  const partial = await syncOnce();
+  expect(partial.pushed === 0, 'przy odbieraniu wyslano czesciowy uklad');
+  const state = await getLocal<any>('engineState', null);
+  expect(state.pendingFolders.includes('root:toolbar') &&
+    state.orderWork['root:toolbar']?.writing, 'brak trwalego zapisu niedokonczonego ruchu');
+  expect(JSON.stringify(a.bookmarks.titles(tb(a))) !== JSON.stringify(desired),
+    'test nie przerwal przestawiania w polowie');
+
+  await converge(a, b);
+  same(a.bookmarks.titles(tb(a)), desired, 'A po wznowieniu');
+  same(b.bookmarks.titles(tb(b)), desired, 'B po wznowieniu');
+  use(a);
+  expect(!(await getLocal<any>('engineState', null)).orderWork['root:toolbar'],
+    'zakonczony dziennik nie zostal usuniety');
+  expect(!(await conflictNotes()).some(note => note.reason === 'order-changed'),
+    'wlasne czesciowe ruchy uznano za konflikt');
+});
+
+await scenario('kolejnosc: wykonany ruch z utracona odpowiedzia jest rozliczany przez after', async () => {
+  const [a, b, titles] = await orderTestPair('Order lost');
+  const desired = [...titles].reverse();
+  use(b);
+  arrangeOrderTest(b, desired);
+  await sync(b);
+
+  use(a);
+  a.bookmarks.loseNextMoveReply = true;
+  await syncOnce();
+  const state = await getLocal<any>('engineState', null);
+  const write = state.orderWork['root:toolbar']?.writing;
+  expect(write, 'utrata odpowiedzi usunela zapis zamiaru');
+  same(a.bookmarks.getChildren(tb(a)).map(node => node.id), write.after,
+    'wykonany ruch nie odpowiada zapisanemu after');
+
+  await converge(a, b);
+  same(a.bookmarks.titles(tb(a)), desired, 'kolejnosc po utracie odpowiedzi');
+  expect(a.bookmarks.bookmarkCount() === titles.length, 'po wznowieniu zmienila sie liczba wpisow');
+  use(a);
+  expect(!(await conflictNotes()).some(note => note.reason === 'order-changed'),
+    'ruch z utracona odpowiedzia uznano za edycje uzytkownika');
+});
+
+await scenario('kolejnosc: pozniejsza edycja po przerwaniu nie jest cofana do starego celu', async () => {
+  const [a, b, titles] = await orderTestPair('Order later');
+  use(b);
+  arrangeOrderTest(b, [...titles].reverse());
+  await sync(b);
+
+  use(a);
+  a.bookmarks.crashAfter = 2;
+  await syncOnce();
+  const wanted = [titles[0], titles[7], titles[2], titles[6], titles[1], titles[5], titles[3], titles[4]];
+  arrangeOrderTest(a, wanted);
+
+  await converge(a, b);
+  same(a.bookmarks.titles(tb(a)), wanted, 'pozniejszy lokalny uklad w A');
+  same(b.bookmarks.titles(tb(b)), wanted, 'pozniejszy lokalny uklad w B');
+});
+
+await scenario('tresc: edycja po zapisie notatki zatrzymuje nadpisanie starej migawki', async () => {
+  const a = await newBrowser('Note race A', 'chromium', 'Edycja po notatce', d => {
+    add(d, 'Note race baza', 'https://note-race.example/');
+  });
+  const b = await newBrowser('Note race B', 'gecko', 'Edycja po notatce');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.update(b.bookmarks.find('Note race baza')!.id, { title: 'Note race serwer' });
+  await sync(b);
+
+  use(a);
+  const id = a.bookmarks.find('Note race baza')!.id;
+  const realFetch = globalThis.fetch;
+  let firstEdit = false;
+  let secondEdit = false;
+
+  a.local.afterSet = items => {
+    const state = items.engineState as { conflicts?: { reason: string }[] } | undefined;
+    if (!secondEdit && state?.conflicts?.some(note => note.reason === 'content-changed')) {
+      secondEdit = true;
+      a.local.afterSet = undefined;
+      a.bookmarks.update(id, { title: 'Note race po zapisie' });
+    }
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!firstEdit && response.ok && url.includes('/api/v1/changes?')) {
+      firstEdit = true;
+      a.bookmarks.update(id, { title: 'Note race pierwsza lokalna' });
+    }
+    return response;
+  };
+
+  try {
+    await sync(a);
+    expect(secondEdit && a.bookmarks.get(id)[0].title === 'Note race po zapisie',
+      'po zapisie notatki nadpisano nowsza edycje stara migawka');
+  } finally {
+    a.local.afterSet = undefined;
+    globalThis.fetch = realFetch;
+  }
+
+  await converge(a, b);
+  use(a);
+  expect((await conflictNotes()).some(note => note.rejectedContent?.fields.some(field =>
+    field.local === 'Note race po zapisie')),
+    'nowsza odrzucona wartosc nie zostala zachowana przed ponownym zastosowaniem serwera');
+});
+
+await scenario('kolejnosc: edycja po zapisie konfliktu nie zostaje nadpisana starym planem', async () => {
+  const [a, b, titles] = await orderTestPair('Order note', 5);
+  use(b);
+  arrangeOrderTest(b, [titles[1], titles[0], ...titles.slice(2)]);
+  await sync(b);
+  use(a);
+
+  const first = [titles[4], ...titles.slice(0, 4)];
+  const latest = [titles[2], titles[4], titles[0], titles[3], titles[1]];
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  let editedAfterNote = false;
+
+  a.local.afterSet = items => {
+    const state = items.engineState as { conflicts?: { reason: string }[] } | undefined;
+    if (!editedAfterNote && state?.conflicts?.some(note => note.reason === 'order-changed')) {
+      editedAfterNote = true;
+      a.local.afterSet = undefined;
+      arrangeOrderTest(a, latest);
+    }
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      arrangeOrderTest(a, first);
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    expect(editedAfterNote, 'test nie wykonal edycji po notatce');
+    same(a.bookmarks.titles(tb(a)), latest, 'nowsza kolejnosc po zapisie notatki');
+  } finally {
+    a.local.afterSet = undefined;
+    globalThis.fetch = realFetch;
+  }
+
+  await converge(a, b);
+  same(b.bookmarks.titles(tb(b)), latest, 'nowszy uklad po synchronizacji');
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

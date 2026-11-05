@@ -39,6 +39,8 @@ class FakeBookmarks {
   crashAfter = -1;
   /** API zapisuje zakladke, ale worker nie dostaje odpowiedzi z jej ID. */
   loseNextBookmarkCreateReply = false;
+  /** Ruch zostaje wykonany, ale obietnica API zostaje odrzucona. */
+  loseNextMoveReply = false;
 
   private mutation() {
     if (this.crashAfter === 0) { this.crashAfter = -1; throw new SimulatedCrash('ubicie wtyczki'); }
@@ -129,6 +131,10 @@ class FakeBookmarks {
     from.children!.splice(oldIndex, 1);
     to.children!.splice(Math.min(index, to.children!.length), 0, n);
     n.parentId = to.id;
+    if (this.loseNextMoveReply) {
+      this.loseNextMoveReply = false;
+      throw new SimulatedCrash('utracona odpowiedz po wykonanym ruchu');
+    }
     return this.shallow(n);
   }
 
@@ -194,13 +200,18 @@ class FakeBookmarks {
 
 class FakeArea {
   private readonly data = new Map<string, string>();
+  /** Edycja uzytkownika po zapisie storage, przed powrotem obietnicy. */
+  afterSet?: (items: Record<string, unknown>) => void;
   async get(keys?: string | string[] | null) {
     const wanted = keys == null ? [...this.data.keys()] : Array.isArray(keys) ? keys : [keys];
     const out: Record<string, unknown> = {};
     for (const k of wanted) { const v = this.data.get(k); if (v !== undefined) out[k] = JSON.parse(v); }
     return out;
   }
-  async set(items: Record<string, unknown>) { for (const [k, v] of Object.entries(items)) this.data.set(k, JSON.stringify(v)); }
+  async set(items: Record<string, unknown>) {
+    for (const [k, v] of Object.entries(items)) this.data.set(k, JSON.stringify(v));
+    this.afterSet?.(items);
+  }
   async remove(keys: string | string[]) { for (const k of Array.isArray(keys) ? keys : [keys]) this.data.delete(k); }
 }
 

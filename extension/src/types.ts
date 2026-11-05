@@ -123,6 +123,8 @@ export interface RejectedPlacement {
   parentId: string;
   afterId: string | null;
   beforeId: string | null;
+  /** Zapisana kolejnosc folderu, jako identyfikatory serwerowe. */
+  order?: string[];
 }
 
 export interface RejectedDeletion {

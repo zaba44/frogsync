@@ -1,5 +1,6 @@
 import { diff, type KnownNode, type LocalNode, type Mapping, type PlannedOp } from './core/diff.js';
 import { planReorder } from './core/reorder.js';
+import { runOrder, sameOrder, type OrderWork } from './order-work.js';
 import { mergeContent } from './core/merge-content.js';
 import { conflictId } from './conflict-id.js';
 import { planBootstrap } from './core/bootstrap.js';
@@ -83,6 +84,9 @@ interface State {
   attempts: Record<string, number>;
   /** Foldery serwera, w ktorych lokalna kolejnosc wymaga sprawdzenia. */
   pendingFolders: string[];
+  orderWork: Record<string, OrderWork>;
+  /** Migawka kolejnosci z chwili utworzenia operacji, kluczowana clientOpId. */
+  placementSent: Record<string, Record<string, string[]>>;
   /** Usuniecia z serwera, ktorych jeszcze nie wykonano lokalnie (hamulec albo blad). */
   pendingDeletes: string[];
   approvedDeletes: string[];
@@ -99,6 +103,7 @@ const EMPTY_STATE = {
   pendingDeletes: [], approvedDeletes: [], bootstrap: null,
   applyBases: {}, authoritativeApply: [],
   subtreeRefresh: [], restoreMissing: [],
+  orderWork: {}, placementSent: {},
 };
 
 async function loadState(): Promise<State | null> {
@@ -360,13 +365,38 @@ export async function restoreConflict(id: string): Promise<SyncStatus> {
       throw new Error('Serwer zmienił generację. Najpierw zsynchronizuj stan i sprawdź punkty przywracania.');
     }
     const { nodes } = await fetchAll(s, 0);
+    const orderRecovery = note.rejectedPlacement?.order;
     const node = nodes.get(recovery.nodeId);
-    if (!node || node.kind === 'root') {
+    if (!node || (node.kind === 'root' && !orderRecovery) || (orderRecovery && node.deleted)) {
       throw new Error('Wpis nie jest już dostępny na serwerze. Skorzystaj z punktu przywracania.');
     }
 
     const ops: PlannedOp[] = [];
-    if (note.rejectedContent) {
+    if (orderRecovery) {
+      const parentId = note.rejectedPlacement!.parentId;
+      if (parentId !== node.id || !['folder', 'root'].includes(node.kind)) {
+        throw new Error('Zapisana kolejność nie należy do dostępnego folderu.');
+      }
+
+      const remote = [...nodes.values()]
+        .filter(item => !item.deleted && item.parentId === parentId)
+        .sort((a, b) => a.order < b.order ? -1 : a.order > b.order ? 1 : 0)
+        .map(item => item.id);
+      const present = new Set(remote);
+      const saved = [...new Set(orderRecovery)].filter(id => present.has(id));
+      const selected = new Set(saved);
+      let cursor = 0;
+      const desired = remote.map(id => selected.has(id) ? saved[cursor++] : id);
+
+      for (const move of planReorder(remote, desired)) {
+        const at = desired.indexOf(move.id);
+        ops.push({
+          clientOpId: crypto.randomUUID(), type: 'move', nodeId: move.id,
+          parentId, afterId: at > 0 ? desired[at - 1] : null, beforeId: null,
+          baseVersion: nodes.get(move.id)!.version,
+        });
+      }
+    } else if (note.rejectedContent) {
       const op: PlannedOp = {
         clientOpId: crypto.randomUUID(), type: 'update', nodeId: node.id,
         baseVersion: node.version, force: node.deleted,
@@ -402,11 +432,20 @@ export async function restoreConflict(id: string): Promise<SyncStatus> {
 
     await checkpoint('undo', s);
     s.outbox = ops;
+    const index = indexTree(await readRoots());
+    for (const op of ops) {
+      if (op.type === 'move' || op.type === 'create') {
+        s.placementSent[op.clientOpId] = submittedOrder(s, op, index);
+      }
+    }
+    if (orderRecovery) rememberOrder(s, node.id, true);
     note.restoredAt = Date.now();
     // Lokalnie wpis ma przyjac odzyskana wartosc z serwera. Bez tego stara wartosc
     // w przegladarce wygladalaby jak nowa edycja i wrocilaby na serwer.
-    delete s.applyBases[node.id];
-    addUnique(s.authoritativeApply, node.id);
+    if (!orderRecovery) {
+      delete s.applyBases[node.id];
+      addUnique(s.authoritativeApply, node.id);
+    }
     // Zgoda i operacja sa trwale w jednym zapisie. Utrata odpowiedzi
     // uruchomi idempotentne ponowienie zamiast drugiej operacji.
     await saveState(s);
@@ -756,6 +795,17 @@ async function flush(s: State): Promise<number> {
   let sent = 0;
   while (s.outbox.length > 0) {
     const batch = s.outbox.slice(0, BATCH);
+    // Zapas dla kolejek zapisanych przez starszy build. Nowe kolejki maja
+    // migawke z tego samego drzewa, z ktorego powstal diff.
+    const index = indexTree(await readRoots());
+    let captured = false;
+    for (const op of batch) {
+      if ((op.type === 'move' || op.type === 'create') && !s.placementSent[op.clientOpId]) {
+        s.placementSent[op.clientOpId] = submittedOrder(s, op, index);
+        captured = true;
+      }
+    }
+    if (captured) await saveState(s);
     let response;
     try {
       response = await api.sendOps(s.session, batch);
@@ -766,6 +816,19 @@ async function flush(s: State): Promise<number> {
     }
     const followUps: PlannedOp[] = [];
     response.results.forEach((result, i) => handleResult(s, batch[i], result, followUps));
+    response.results.forEach((result, i) => {
+      const op = batch[i];
+      if (result.status !== 'applied' || (op.type !== 'move' && op.type !== 'create')) return;
+      for (const [parent, expected] of Object.entries(s.placementSent[op.clientOpId] ?? {})) {
+        rememberOrder(s, parent);
+        const work = s.orderWork[parent];
+        work.expected = [...expected];
+        work.remote = serverOrder(s, parent).map(id => s.mapping.s2l[id])
+          .filter((id): id is string => !!id);
+        delete work.target;
+      }
+    });
+    for (const op of batch) delete s.placementSent[op.clientOpId];
     s.outbox = [...s.outbox.slice(batch.length), ...followUps];
     sent += batch.length;
     await saveState(s);
@@ -794,6 +857,8 @@ async function handleReset(s: State, generation: string): Promise<void> {
   s.authoritativeApply = [];
   s.reapply = [];
   s.pendingFolders = [];
+  s.orderWork = {};
+  s.placementSent = {};
   s.brake = {};
   if (s.outbox.length > 0) {
     s.conflicts.push({ at: Date.now(), reason: 'reset', title: `${s.outbox.length} niewysłanych zmian`,
@@ -803,6 +868,29 @@ async function handleReset(s: State, generation: string): Promise<void> {
   s.session.generation = generation;
   s.requireFull = true;
   await saveState(s);
+}
+
+function serverOrder(s: State, parent: string): string[] {
+  return Object.values(s.known).filter(node => node.parentId === parent)
+    .sort((a, b) => a.order < b.order ? -1 : a.order > b.order ? 1 : 0)
+    .map(node => node.id);
+}
+
+function rememberOrder(s: State, parent: string | null | undefined, authoritative = false): void {
+  if (!parent) return;
+  s.orderWork[parent] ??= { base: serverOrder(s, parent), authoritative: false };
+  if (authoritative) s.orderWork[parent].authoritative = true;
+  addUnique(s.pendingFolders, parent);
+}
+
+function submittedOrder(s: State, op: PlannedOp, index: Map<string, LocalNode>): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  for (const parent of [op.parentId, s.known[op.nodeId]?.parentId]) {
+    const lid = parent ? s.mapping.s2l[parent] : undefined;
+    const node = lid ? index.get(lid) : undefined;
+    if (parent && node) result[parent] = (node.children ?? []).map(child => child.id);
+  }
+  return result;
 }
 
 function rememberApplyBase(s: State, base: KnownNode, acknowledged?: PlannedOp): void {
@@ -850,12 +938,19 @@ function handleResult(s: State, op: PlannedOp, r: OpResult, followUps: PlannedOp
     }
     s.conflicts.push(entry);
   };
-  const retry = (patch: Partial<PlannedOp>) => followUps.push({ ...op, ...patch, clientOpId: crypto.randomUUID() });
+  const retry = (patch: Partial<PlannedOp>) => {
+    const next = { ...op, ...patch, clientOpId: crypto.randomUUID() };
+    const submitted = s.placementSent[op.clientOpId];
+    if (submitted) s.placementSent[next.clientOpId] = structuredClone(submitted);
+    followUps.push(next);
+  };
 
   if (r.status === 'applied') {
     if (r.node?.deleted) { forget(s, op.nodeId); return; }
     if (!r.node) return;
     const previous = s.known[r.node.id];
+    rememberOrder(s, previous?.parentId);
+    rememberOrder(s, r.node.parentId);
     if (previous && (op.type === 'update' || op.type === 'move')) {
       rememberApplyBase(s, previous, op);
     }
@@ -989,6 +1084,11 @@ async function detectAndSend(s: State, restore?: RestoreJob): Promise<number> {
 
   for (const m of out.newMappings) link(s, m.serverId, m.localId);
   s.outbox = ops;
+  for (const op of ops) {
+    if (op.type === 'move' || op.type === 'create') {
+      s.placementSent[op.clientOpId] = submittedOrder(s, op, index);
+    }
+  }
   // Zapis kolejki i zakonczenie zadania musza byc jednym zapisem storage.
   await saveState(s, !!restore);
   return flush(s);
@@ -1127,6 +1227,8 @@ async function applyNodes(s: State, live: ServerNode[], full: boolean): Promise<
   for (const n of live) {
     if (n.kind === 'root') continue;
     const prev = s.known[n.id];
+    rememberOrder(s, prev?.parentId, full);
+    rememberOrder(s, n.parentId, full);
     previous.set(n.id, prev);
     if (prev) rememberApplyBase(s, prev);
     if (full) addUnique(s.authoritativeApply, n.id);
@@ -1193,31 +1295,60 @@ async function reconcile(s: State, previousEntries: [string, KnownNode | undefin
     await saveIntents({});
 
     // Kolejnosc — minimalna liczba przesuniec
-    const folders = [...s.pendingFolders];
     const finished = new Set<string>();
-    for (const serverFolder of folders) {
+    for (const serverFolder of [...s.pendingFolders]) {
       const localFolder = s.mapping.s2l[serverFolder];
-      if (!localFolder || !(await exists(localFolder))) { if (!s.known[serverFolder] && !serverFolder.startsWith('root:')) finished.add(serverFolder); continue; }
-      try {
-        const current = await childIds(localFolder);
-        const present = new Set(current);
-        const desired = Object.values(s.known)
-          .filter(k => k.parentId === serverFolder)
-          .sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0))
-          .map(k => s.mapping.s2l[k.id])
-          .filter((lid): lid is string => !!lid && present.has(lid));
-        const order = [...current];
-        for (const move of planReorder(current, desired)) {
-          await moveWithin(move.id, localFolder, move.index, order);
-          order.splice(order.indexOf(move.id), 1);
-          order.splice(move.index, 0, move.id);
+      if (!localFolder || !(await exists(localFolder))) {
+        if (!s.known[serverFolder] && !serverFolder.startsWith('root:')) {
+          finished.add(serverFolder);
+          delete s.orderWork[serverFolder];
         }
-        // Sprawdzenie wyniku: kolejnosc potwierdzamy dopiero, gdy przegladarka faktycznie ja ma
-        const after = (await childIds(localFolder)).filter(id => desired.includes(id));
-        if (JSON.stringify(after) === JSON.stringify(desired)) finished.add(serverFolder);
-      } catch { /* zostaje na nastepny przebieg */ }
+        continue;
+      }
+
+      rememberOrder(s, serverFolder, full);
+      const work = s.orderWork[serverFolder];
+      try {
+        const complete = await runOrder(work, {
+          read: () => childIds(localFolder),
+          remote: () => serverOrder(s, serverFolder)
+            .map(id => s.mapping.s2l[id]).filter((id): id is string => !!id),
+          localId: id => s.mapping.s2l[id],
+          save: () => saveState(s),
+          move: (id, index, before) => moveWithin(id, localFolder, index, before),
+          conflict: async localOrder => {
+            const rejectedPlacement = {
+              nodeId: serverFolder,
+              generation: s.session.generation,
+              parentId: serverFolder,
+              afterId: null,
+              beforeId: null,
+              order: localOrder.map(id => s.mapping.l2s[id]).filter((id): id is string => !!id),
+            };
+            if (!s.conflicts.some(note => !note.restoredAt &&
+              JSON.stringify(note.rejectedPlacement) === JSON.stringify(rejectedPlacement))) {
+              s.conflicts.push({
+                at: Date.now(),
+                reason: 'order-changed',
+                title: s.known[serverFolder]?.title ||
+                  ROOT_LABELS[serverFolder as keyof typeof ROOT_LABELS] || '(folder)',
+                outcome: 'Kolejność zmieniono w obu przeglądarkach. Zachowano Twoją wersję do przywrócenia.',
+                rejectedPlacement,
+              });
+            }
+            await saveState(s);
+          },
+        });
+
+        if (complete) {
+          finished.add(serverFolder);
+          delete s.orderWork[serverFolder];
+        }
+      } catch {
+        // Dziennik before/after pozostaje do rozliczenia w nastepnym przebiegu.
+      }
     }
-    s.pendingFolders = s.pendingFolders.filter(f => !finished.has(f));
+    s.pendingFolders = s.pendingFolders.filter(id => !finished.has(id));
   });
 
   await saveState(s);
@@ -1309,6 +1440,12 @@ async function applyOne(
       await saveState(s);
     }
 
+    const checkedContent = await nodeFresh(local.id);
+    if (!checkedContent || checkedContent.title !== local.title ||
+      (checkedContent.url ?? null) !== (local.url ?? null) ||
+      checkedContent.parentId !== local.parentId) {
+      return 'retry';
+    }
     await updateLocal(local.id, merged.changes);
 
     // Tytul i URL mogly wymagac zapisu storage. Odczytujemy rodzica ponownie.
@@ -1324,8 +1461,10 @@ async function applyOne(
         return 'ok';
       }
 
+      let placementBefore: string[] | undefined;
       if (!full && localMoved && remoteMoved && current.parentId) {
         const siblings = await childIds(current.parentId);
+        placementBefore = siblings;
         const at = siblings.indexOf(current.id);
         const mapped = (id: string | undefined) => id ? s.mapping.l2s[id] ?? null : null;
         if (currentParent) {
@@ -1351,6 +1490,8 @@ async function applyOne(
 
       const checked = await nodeFresh(current.id);
       if (!checked || checked.parentId !== current.parentId) return 'retry';
+      if (placementBefore && current.parentId &&
+        !sameOrder(await childIds(current.parentId), placementBefore)) return 'retry';
       await moveToFolderEnd(current.id, parentLocal);
       addUnique(s.pendingFolders, k.parentId);
     }
@@ -1519,6 +1660,7 @@ function forget(s: State, sid: string): void {
   s.authoritativeApply = s.authoritativeApply.filter(id => id !== sid);
   s.restoreMissing = s.restoreMissing.filter(id => id !== sid);
   s.subtreeRefresh = s.subtreeRefresh.filter(id => id !== sid);
+  delete s.orderWork[sid];
   s.reapply = s.reapply.filter(x => x !== sid);
   s.pendingDeletes = s.pendingDeletes.filter(x => x !== sid);
   s.approvedDeletes = s.approvedDeletes.filter(x => x !== sid);
