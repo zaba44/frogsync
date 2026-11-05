@@ -296,6 +296,8 @@ const AUDIT_NAMES = {
   'startpage-settings': 'zmiana ustawień strony startowej',
   'startpage-logo': 'zapis logo profilu',
   'startpage-logo-deleted': 'usunięcie logo profilu',
+  'startpage-background': 'zapis tła strony startowej',
+  'startpage-background-deleted': 'usunięcie tła strony startowej',
   'admin-created': 'utworzono administratora', 'admin-login': 'logowanie', 'admin-login-failed': 'nieudane logowanie',
   'admin-logout': 'wylogowanie', 'admin-password-changed': 'zmiana hasła', 'admin-reset': 'reset administratora',
   'profile-created': 'nowy profil', 'profile-renamed': 'zmiana nazwy profilu',
@@ -831,12 +833,23 @@ function spUpdate() {
   $('#sp-refresh-logo').disabled = locked || !!editor.conflict;
 }
 
+async function spRefreshAudit() {
+  try {
+    const latest = await api('state');
+    if (state) state.audit = latest.audit;
+    if (!$('#view-main').hidden) renderAudit();
+  } catch { /* Zapis juz sie udal; blad odczytu dziennika nie zmienia jego wyniku. */ }
+}
+
 async function spWork(editor, kind, action) {
   if (!editor || spEditor !== editor || spOpening || editor.busy) return;
   editor.busy = true;
   spMessage('');
   spUpdate();
-  try { await action(); }
+  try {
+    await action();
+    void spRefreshAudit();
+  }
   catch (error) {
     if (spEditor !== editor) return;
     if (error instanceof SpHttpError && error.status === 409 &&

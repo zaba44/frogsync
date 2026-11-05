@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace FrogSync.Server.StartPage;
 
 public sealed record StartPageSection(
@@ -12,34 +14,73 @@ public sealed record StartPageEngine(
     string Color,
     string Suggest);
 
-public sealed record StartPageDocument(
-    int Version,
-    List<StartPageSection> Sections,
-    List<StartPageEngine> Engines);
+public sealed record StartPageTile(
+    string Id,
+    string Title,
+    string Url,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Color = null);
+
+public sealed record StartPageBlock
+{
+    public string Id { get; init; } = "";
+    public string Type { get; init; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Title { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FolderId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<StartPageTile>? Tiles { get; init; }
+
+    // Pola wyliczane przy odczycie; nie sa zapisywane w settings.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Available { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FolderTitle { get; init; }
+}
+
+public sealed record StartPageDocument
+{
+    public int Version { get; init; }
+
+    // Obslugiwane na wejsciu v1. Dokument kanoniczny nie zawiera sections.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<StartPageSection>? Sections { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<StartPageBlock>? Blocks { get; init; }
+
+    public List<StartPageEngine>? Engines { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Template { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Configured { get; init; }
+}
 
 public sealed record StartPageSave(
     long SettingsVersion,
     string Generation,
     StartPageDocument Configuration);
 
-public sealed record StartPageSectionView(
-    string Id,
-    string FolderId,
-    string? Title,
-    bool Available,
-    string? FolderTitle);
-
-public sealed record StartPageView(
-    int Version,
-    List<StartPageSectionView> Sections,
-    List<StartPageEngine> Engines);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record StartPageCustomSave(
+    long SettingsVersion,
+    string Generation,
+    List<StartPageBlock> Blocks);
 
 public sealed record StartPageSnapshot(
     string ProfileId,
     string Generation,
     long SettingsVersion,
     long LogoVersion,
-    StartPageView Configuration);
+    long BackgroundVersion,
+    StartPageDocument Configuration);
 
 public sealed record StartPageFolder(
     string Id,
@@ -53,10 +94,10 @@ public sealed record StartPageFolders(
     string Generation,
     List<StartPageFolder> Folders);
 
-public sealed record StartPageLogo(
+public sealed record StartPageAsset(
     string ProfileId,
     string Generation,
-    long LogoVersion,
+    long Version,
     byte[]? Bytes,
     string? ContentType);
 

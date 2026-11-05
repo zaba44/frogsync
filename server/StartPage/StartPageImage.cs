@@ -21,7 +21,7 @@ internal static class StartPageImage
         if (dimensions.Width is < 1 or > 4096 ||
             dimensions.Height is < 1 or > 4096 ||
             (long)dimensions.Width * dimensions.Height > 16_777_216)
-            throw new ArgumentException("Logo musi miec wymiary od 1 do 4096 pikseli.");
+            throw new ArgumentException("Obraz musi miec wymiary od 1 do 4096 pikseli.");
 
         // Bajty sa pozniej podawane tylko z ustalonym typem image/* i nosniff.
     }

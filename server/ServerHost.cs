@@ -120,10 +120,10 @@ public static class ServerHost
             headers["Access-Control-Allow-Origin"] = origin;
             headers["Vary"] = "Origin";
             headers["Access-Control-Expose-Headers"] =
-                "ETag, X-FrogSync-Generation, X-FrogSync-Logo-Version";
+                "ETag, X-FrogSync-Generation, X-FrogSync-Logo-Version, X-FrogSync-Background-Version";
             if (HttpMethods.IsOptions(http.Request.Method) && http.Request.Headers.ContainsKey("Access-Control-Request-Method"))
             {
-                headers["Access-Control-Allow-Methods"] = "GET, POST";
+                headers["Access-Control-Allow-Methods"] = "GET, POST, PUT";
                 headers["Access-Control-Allow-Headers"] =
                     "Authorization, Content-Type, X-FrogSync-Version, If-None-Match";
                 headers["Access-Control-Max-Age"] = "600";

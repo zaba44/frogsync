@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using FrogSync.Server.Infrastructure;
 using Microsoft.Data.Sqlite;
 
@@ -10,39 +10,44 @@ public sealed class StartPageService(Database db)
 {
     public const int MaxJsonBytes = 64 * 1024;
     public const int MaxLogoBytes = 512 * 1024;
-    public const int MaxSections = 64;
-    public const int MaxEngines = 32;
+    public const int MaxBackgroundBytes = 2 * 1024 * 1024;
 
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         MaxDepth = 16,
     };
 
-    private static readonly Regex SafeId = new(
-        @"\A[A-Za-z0-9_-]{1,64}\z",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-
-    private static readonly Regex Color = new(
-        @"\A#[0-9A-Fa-f]{6}\z",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-
     private sealed record ProfileRow(
         string Settings,
         long SettingsVersion,
         long LogoVersion,
-        byte[]? Logo,
-        string? LogoType);
+        long BackgroundVersion);
 
     public StartPageSnapshot Get(string profileId) =>
         Read((c, tx) => Snapshot(c, tx, profileId));
 
-    public StartPageLogo GetLogo(string profileId) =>
+    public StartPageAsset GetAsset(string profileId, bool background) =>
         Read((c, tx) =>
         {
-            var row = Profile(c, tx, profileId, includeLogo: true);
-            return new StartPageLogo(
-                profileId, Generation(c, tx), row.LogoVersion,
-                row.Logo, row.LogoType);
+            var prefix = background ? "background" : "logo";
+
+            using var cmd = Database.Command(c,
+                $"SELECT {prefix}_version, {prefix}, {prefix}_type FROM profiles WHERE id = @p",
+                tx, ("@p", profileId));
+
+            using var reader = cmd.ExecuteReader();
+
+            if (!reader.Read())
+                throw new KeyNotFoundException("Nie ma takiego profilu.");
+
+            var version = reader.GetInt64(0);
+            var bytes = reader.IsDBNull(1) ? null : (byte[])reader.GetValue(1);
+            var type = reader.IsDBNull(2) ? null : reader.GetString(2);
+
+            reader.Close();
+
+            return new StartPageAsset(
+                profileId, Generation(c, tx), version, bytes, type);
         });
 
     public StartPageFolders GetFolders(string profileId) =>
@@ -53,8 +58,7 @@ public sealed class StartPageService(Database db)
             using var cmd = Database.Command(c, """
                 SELECT id, parent_id, kind, title, order_key
                 FROM nodes
-                WHERE profile_id = @p
-                  AND deleted = 0
+                WHERE profile_id = @p AND deleted = 0
                   AND kind IN ('root', 'folder')
                 ORDER BY parent_id COLLATE BINARY, order_key COLLATE BINARY, id COLLATE BINARY
                 """, tx, ("@p", profileId));
@@ -63,91 +67,110 @@ public sealed class StartPageService(Database db)
             var folders = new List<StartPageFolder>();
 
             while (reader.Read())
-            {
                 folders.Add(new StartPageFolder(
                     reader.GetString(0),
                     reader.IsDBNull(1) ? null : reader.GetString(1),
-                    reader.GetString(2),
-                    reader.GetString(3),
-                    reader.GetString(4)));
-            }
+                    reader.GetString(2), reader.GetString(3), reader.GetString(4)));
+
+            reader.Close();
 
             return new StartPageFolders(profileId, Generation(c, tx), folders);
         });
 
     public Task<StartPageSnapshot> SaveAsync(
-        string profileId,
-        StartPageSave request,
-        string? ip,
+        string profileId, StartPageSave request, string? ip,
         CancellationToken ct = default)
     {
-        if (request is null ||
-            request.SettingsVersion < 0 ||
-            string.IsNullOrWhiteSpace(request.Generation))
-            throw new ArgumentException("Wymagane generation i settingsVersion.");
-
-        var document = Normalize(request.Configuration);
-        var encoded = JsonSerializer.SerializeToUtf8Bytes(document, Json);
-
-        if (encoded.Length > MaxJsonBytes)
-            throw new ArgumentException("Konfiguracja przekracza 64 KB.");
-
-        var settings = System.Text.Encoding.UTF8.GetString(encoded);
+        ValidateStamp(request?.Generation, request?.SettingsVersion ?? -1);
+        var document = StartPageDocuments.Normalize(request!.Configuration);
 
         return db.WriteAsync((c, tx) =>
         {
             var current = Snapshot(c, tx, profileId);
+            CheckSettings(current, request.Generation, request.SettingsVersion);
 
-            if (request.Generation != current.Generation ||
-                request.SettingsVersion != current.SettingsVersion)
-                throw new StartPageConflict(current);
+            // Stary panel nie moze cicho usunac funkcji dodanych w v2.
+            if (request.Configuration.Version == 1 &&
+                (current.Configuration.Template != "classic" ||
+                 current.Configuration.Blocks!.Any(b => b.Type != "folder")))
+                throw new ArgumentException("Ten profil wymaga panelu obslugujacego dokument v2.");
 
-            foreach (var section in document.Sections)
+            foreach (var block in document.Blocks!.Where(b => b.Type == "folder"))
             {
-                var found = Database.Scalar(c, """
+                var live = Database.Scalar(c, """
                     SELECT 1 FROM nodes
                     WHERE profile_id = @p AND id = @id
                       AND kind = 'folder' AND deleted = 0
-                    """, tx, ("@p", profileId), ("@id", section.FolderId));
+                    """, tx, ("@p", profileId), ("@id", block.FolderId));
 
-                if (found is null)
-                    throw new ArgumentException(
-                        "Kazda sekcja musi wskazywac zywy folder tego profilu.");
+                // Niedostepna sekcja moze pozostac przy edycji innych ustawien.
+                var retained = current.Configuration.Blocks!.Any(old =>
+                    old.Type == "folder" && old.Id == block.Id &&
+                    old.FolderId == block.FolderId);
+
+                if (live is null && !retained)
+                    throw new ArgumentException("Nowy blok folder musi wskazywac zywy folder tego profilu.");
             }
 
-            var next = checked(current.SettingsVersion + 1);
-
-            Database.Exec(c, """
-                UPDATE profiles
-                SET settings = @settings, settings_version = @version
-                WHERE id = @p
-                """, tx,
-                ("@settings", settings), ("@version", next), ("@p", profileId));
-
-            Audit.Write(c, tx, "startpage-settings", "admin", ip,
-                $"profile={profileId}; settingsVersion={next}");
-
+            WriteSettings(c, tx, profileId, current, document, "admin", ip);
             return Snapshot(c, tx, profileId);
         }, ct);
     }
 
-    // bytes == null oznacza usuniecie logo.
-    public Task<StartPageSnapshot> SaveLogoAsync(
-        string profileId,
-        string generation,
-        long expectedVersion,
-        byte[]? bytes,
-        string? contentType,
-        string? ip,
+    public Task<StartPageSnapshot> SaveCustomAsync(
+        string profileId, string deviceId, StartPageCustomSave request,
+        string? ip, CancellationToken ct = default)
+    {
+        ValidateStamp(request?.Generation, request?.SettingsVersion ?? -1);
+
+        if (request?.Blocks is null ||
+            request.Blocks.Any(b => b is null || b.Type != "custom"))
+            throw new ArgumentException("Urzadzenie moze przeslac wylacznie bloki custom.");
+
+        return db.WriteAsync((c, tx) =>
+        {
+            var current = Snapshot(c, tx, profileId);
+            CheckSettings(current, request.Generation, request.SettingsVersion);
+
+            var remaining = new Queue<StartPageBlock>(request.Blocks);
+            var merged = new List<StartPageBlock>();
+
+            // Zachowujemy kolejnosc i tresc blokow innych niz custom.
+            // Custom zajmuja dotychczasowe miejsca; nadmiar trafia na koniec.
+            foreach (var block in current.Configuration.Blocks!)
+            {
+                if (block.Type != "custom")
+                    merged.Add(block);
+                else if (remaining.TryDequeue(out var replacement))
+                    merged.Add(replacement);
+            }
+
+            merged.AddRange(remaining);
+
+            var document = StartPageDocuments.Normalize(current.Configuration with
+            {
+                Blocks = merged,
+                Configured = true,
+            });
+
+            WriteSettings(c, tx, profileId, current, document, deviceId, ip);
+            return Snapshot(c, tx, profileId);
+        }, ct);
+    }
+
+    public Task<StartPageSnapshot> SaveAssetAsync(
+        string profileId, string generation, long expectedVersion,
+        byte[]? bytes, string? contentType, bool background, string? ip,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(generation) || expectedVersion < 0)
-            throw new ArgumentException("Wymagane generation i logoVersion.");
+        ValidateStamp(generation, expectedVersion);
 
         if (bytes is not null)
         {
-            if (bytes.Length > MaxLogoBytes)
-                throw new ArgumentException("Logo przekracza 512 KB.");
+            var maximum = background ? MaxBackgroundBytes : MaxLogoBytes;
+
+            if (bytes.Length > maximum)
+                throw new ArgumentException("Obraz przekracza limit rozmiaru.");
 
             StartPageImage.Validate(bytes, contentType);
             bytes = bytes.ToArray();
@@ -156,35 +179,75 @@ public sealed class StartPageService(Database db)
         return db.WriteAsync((c, tx) =>
         {
             var current = Snapshot(c, tx, profileId);
+            var currentVersion = background ? current.BackgroundVersion : current.LogoVersion;
 
-            if (generation != current.Generation ||
-                expectedVersion != current.LogoVersion)
+            if (generation != current.Generation || expectedVersion != currentVersion)
                 throw new StartPageConflict(current);
 
-            var row = Profile(c, tx, profileId, includeLogo: true);
+            var prefix = background ? "background" : "logo";
+            var exists = Database.Scalar(c,
+                $"SELECT {prefix} IS NOT NULL FROM profiles WHERE id = @p",
+                tx, ("@p", profileId));
 
-            // Ponowne usuniecie nieistniejacego logo nie tworzy nowej wersji.
-            if (bytes is null && row.Logo is null)
+            if (bytes is null && Convert.ToInt64(exists) == 0)
                 return current;
 
-            var next = checked(current.LogoVersion + 1);
+            var next = checked(currentVersion + 1);
 
-            Database.Exec(c, """
+            Database.Exec(c, $"""
                 UPDATE profiles
-                SET logo = @logo, logo_type = @type, logo_version = @version
+                SET {prefix} = @bytes, {prefix}_type = @type, {prefix}_version = @version
                 WHERE id = @p
                 """, tx,
-                ("@logo", bytes),
+                ("@bytes", bytes),
                 ("@type", bytes is null ? null : contentType),
                 ("@version", next),
                 ("@p", profileId));
 
-            Audit.Write(c, tx,
-                bytes is null ? "startpage-logo-deleted" : "startpage-logo",
-                "admin", ip, $"profile={profileId}; logoVersion={next}");
+            var kind = "startpage-" + prefix + (bytes is null ? "-deleted" : "");
+
+            Audit.Write(c, tx, kind, "admin", ip,
+                $"profile={profileId}; {prefix}Version={next}");
 
             return Snapshot(c, tx, profileId);
         }, ct);
+    }
+
+    private static void WriteSettings(
+        SqliteConnection c, SqliteTransaction tx,
+        string profileId, StartPageSnapshot current,
+        StartPageDocument document, string actor, string? ip)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(document, Json);
+
+        if (bytes.Length > MaxJsonBytes)
+            throw new ArgumentException("Konfiguracja przekracza 64 KB.");
+
+        var next = checked(current.SettingsVersion + 1);
+
+        Database.Exec(c, """
+            UPDATE profiles
+            SET settings = @settings, settings_version = @version
+            WHERE id = @p
+            """, tx,
+            ("@settings", Encoding.UTF8.GetString(bytes)),
+            ("@version", next), ("@p", profileId));
+
+        Audit.Write(c, tx, "startpage-settings", actor, ip,
+            $"profile={profileId}; settingsVersion={next}; format=2");
+    }
+
+    private static void ValidateStamp(string? generation, long version)
+    {
+        if (string.IsNullOrWhiteSpace(generation) || version < 0)
+            throw new ArgumentException("Wymagane generation i nieujemna wersja.");
+    }
+
+    private static void CheckSettings(
+        StartPageSnapshot current, string generation, long version)
+    {
+        if (generation != current.Generation || version != current.SettingsVersion)
+            throw new StartPageConflict(current);
     }
 
     internal static string ETag<T>(T value) =>
@@ -194,7 +257,6 @@ public sealed class StartPageService(Database db)
     private T Read<T>(Func<SqliteConnection, SqliteTransaction, T> work) =>
         db.Read(c =>
         {
-            // Generacja, konfiguracja i dostepnosc folderow z jednego obrazu bazy.
             using var tx = c.BeginTransaction(deferred: true);
             var result = work(c, tx);
             tx.Commit();
@@ -206,15 +268,10 @@ public sealed class StartPageService(Database db)
             "SELECT value FROM meta WHERE key = 'generation'", tx)!;
 
     private static ProfileRow Profile(
-        SqliteConnection c,
-        SqliteTransaction tx,
-        string profileId,
-        bool includeLogo = false)
+        SqliteConnection c, SqliteTransaction tx, string profileId)
     {
-        using var cmd = Database.Command(c,
-            $"""
-            SELECT settings, settings_version, logo_version,
-                   {(includeLogo ? "logo" : "NULL")}, logo_type
+        using var cmd = Database.Command(c, """
+            SELECT settings, settings_version, logo_version, background_version
             FROM profiles WHERE id = @p
             """, tx, ("@p", profileId));
 
@@ -224,140 +281,33 @@ public sealed class StartPageService(Database db)
             throw new KeyNotFoundException("Nie ma takiego profilu.");
 
         return new ProfileRow(
-            reader.GetString(0),
-            reader.GetInt64(1),
-            reader.GetInt64(2),
-            reader.IsDBNull(3) ? null : (byte[])reader.GetValue(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4));
+            reader.GetString(0), reader.GetInt64(1),
+            reader.GetInt64(2), reader.GetInt64(3));
     }
 
     private static StartPageSnapshot Snapshot(
-        SqliteConnection c,
-        SqliteTransaction tx,
-        string profileId)
+        SqliteConnection c, SqliteTransaction tx, string profileId)
     {
         var row = Profile(c, tx, profileId);
+        var document = StartPageDocuments.Read(row.Settings);
 
-        var document = row.Settings.Trim() == "{}"
-            ? new StartPageDocument(1, [], [])
-            : JsonSerializer.Deserialize<StartPageDocument>(row.Settings, Json)
-              ?? throw new InvalidOperationException("Niepoprawna zapisana konfiguracja.");
-
-        var sections = new List<StartPageSectionView>();
-
-        foreach (var section in document.Sections)
+        var blocks = document.Blocks!.Select(block =>
         {
+            if (block.Type != "folder")
+                return block;
+
             var title = Database.Scalar(c, """
                 SELECT title FROM nodes
                 WHERE profile_id = @p AND id = @id
                   AND kind = 'folder' AND deleted = 0
-                """, tx, ("@p", profileId), ("@id", section.FolderId)) as string;
+                """, tx, ("@p", profileId), ("@id", block.FolderId)) as string;
 
-            sections.Add(new StartPageSectionView(
-                section.Id, section.FolderId, section.Title,
-                title is not null, title));
-        }
+            return block with { Available = title is not null, FolderTitle = title };
+        }).ToList();
 
         return new StartPageSnapshot(
-            profileId,
-            Generation(c, tx),
-            row.SettingsVersion,
-            row.LogoVersion,
-            new StartPageView(document.Version, sections, document.Engines));
+            profileId, Generation(c, tx), row.SettingsVersion,
+            row.LogoVersion, row.BackgroundVersion,
+            document with { Blocks = blocks });
     }
-
-    private static StartPageDocument Normalize(StartPageDocument? input)
-    {
-        if (input is null || input.Version != 1 ||
-            input.Sections is null || input.Engines is null)
-            throw new ArgumentException("Wymagany dokument version=1 z sections i engines.");
-
-        if (input.Sections.Count > MaxSections || input.Engines.Count > MaxEngines)
-            throw new ArgumentException("Maksymalnie 64 sekcje i 32 wyszukiwarki.");
-
-        var sections = new List<StartPageSection>();
-        var engines = new List<StartPageEngine>();
-        var sectionIds = new HashSet<string>(StringComparer.Ordinal);
-        var folderIds = new HashSet<string>(StringComparer.Ordinal);
-        var engineIds = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var section in input.Sections)
-        {
-            if (section is null || !ValidId(section.Id) ||
-                !sectionIds.Add(section.Id) ||
-                !Guid.TryParseExact(section.FolderId, "D", out var folder))
-                throw new ArgumentException("Niepoprawne lub powtorzone ID sekcji/folderu.");
-
-            var folderId = folder.ToString("D");
-
-            if (!folderIds.Add(folderId))
-                throw new ArgumentException("Folder moze wystepowac tylko w jednej sekcji.");
-
-            var title = section.Title?.Trim();
-
-            if (title == "")
-                title = null;
-
-            if (title is not null && !ValidText(title, 200))
-                throw new ArgumentException("Nazwa sekcji: maksymalnie 200 znakow.");
-
-            sections.Add(new StartPageSection(section.Id, folderId, title));
-        }
-
-        foreach (var engine in input.Engines)
-        {
-            if (engine is null || !ValidId(engine.Id) || !engineIds.Add(engine.Id))
-                throw new ArgumentException("Niepoprawne lub powtorzone ID wyszukiwarki.");
-
-            var name = engine.Name?.Trim();
-            var url = engine.Url?.Trim();
-            var color = engine.Color?.Trim();
-
-            if (name is null || !ValidText(name, 100))
-                throw new ArgumentException("Nazwa wyszukiwarki: 1-100 znakow.");
-
-            if (color is null || !Color.IsMatch(color))
-                throw new ArgumentException("Kolor wyszukiwarki musi miec postac #RRGGBB.");
-
-            if (engine.Suggest is not ("google" or "none"))
-                throw new ArgumentException("suggest musi miec wartosc google albo none.");
-
-            if (url is null || url.Length > 2048 || url.Any(char.IsWhiteSpace) ||
-                url.Any(char.IsControl))
-                throw new ArgumentException("Niepoprawny adres wyszukiwarki.");
-
-            var marker = url.IndexOf("%s", StringComparison.Ordinal);
-
-            if (marker < 0 || url.IndexOf("%s", marker + 2, StringComparison.Ordinal) >= 0)
-                throw new ArgumentException("Adres musi zawierac dokladnie jeden znacznik %s.");
-
-            var probe = url.Replace("%s", "FrogSync", StringComparison.Ordinal);
-
-            if (!Uri.IsWellFormedUriString(probe, UriKind.Absolute) ||
-                !Uri.TryCreate(probe, UriKind.Absolute, out var uri) ||
-                uri.Scheme != Uri.UriSchemeHttps ||
-                string.IsNullOrEmpty(uri.Host) ||
-                !string.IsNullOrEmpty(uri.UserInfo))
-                throw new ArgumentException("Adres wyszukiwarki musi byc poprawnym HTTPS bez hasla.");
-
-            // Zapytanie nie moze stac sie czescia nazwy hosta.
-            var alternative = new Uri(url.Replace(
-                "%s", "AnotherQuery", StringComparison.Ordinal));
-
-            if (!string.Equals(uri.Authority, alternative.Authority,
-                    StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Znacznik %s musi znajdowac sie za nazwa hosta.");
-
-            engines.Add(new StartPageEngine(
-                engine.Id, name, url, color.ToUpperInvariant(), engine.Suggest));
-        }
-
-        return new StartPageDocument(1, sections, engines);
-    }
-
-    private static bool ValidId(string? value) =>
-        value is not null && SafeId.IsMatch(value);
-
-    private static bool ValidText(string value, int maximum) =>
-        value.Length is > 0 && value.Length <= maximum && !value.Any(char.IsControl);
 }

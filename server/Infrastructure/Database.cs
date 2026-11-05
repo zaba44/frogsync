@@ -251,6 +251,12 @@ public sealed class Database
         """
         ALTER TABLE devices ADD COLUMN extension_version TEXT NOT NULL DEFAULT '';
         """,
+        // 5 - tlo strony startowej, niezalezne od logo i seq zakladek.
+        """
+        ALTER TABLE profiles ADD COLUMN background BLOB;
+        ALTER TABLE profiles ADD COLUMN background_type TEXT;
+        ALTER TABLE profiles ADD COLUMN background_version INTEGER NOT NULL DEFAULT 0;
+        """,
     ];
 
     public static int SchemaVersion => Migrations.Length;

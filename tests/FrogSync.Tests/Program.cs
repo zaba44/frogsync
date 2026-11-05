@@ -1078,7 +1078,7 @@ try
                before.GetProperty("logoVersion").GetInt64(),
             "Zapis konfiguracji zmienil wersje logo.");
 
-        var section = saved.GetProperty("configuration").GetProperty("sections")[0];
+        var section = saved.GetProperty("configuration").GetProperty("blocks")[0];
 
         Expect(section.GetProperty("available").GetBoolean() &&
                section.GetProperty("folderTitle").GetString() == folder.Title,
@@ -1248,7 +1248,7 @@ try
                    "/api/v1/startpage", etag: etag))
         {
             var body = await SpJson(response);
-            Expect(body.GetProperty("configuration").GetProperty("sections")[0]
+            Expect(body.GetProperty("configuration").GetProperty("blocks")[0]
                     .GetProperty("folderTitle").GetString() == "Nowa nazwa",
                 "Nazwa folderu jest nieaktualna.");
             Expect(body.GetProperty("settingsVersion").GetInt64() ==
@@ -1268,7 +1268,7 @@ try
         using var deleted = await SpSend(deviceA.Client, HttpMethod.Get,
             "/api/v1/startpage", etag: renamedEtag);
         var unavailable = await SpJson(deleted);
-        var sections = unavailable.GetProperty("configuration").GetProperty("sections");
+        var sections = unavailable.GetProperty("configuration").GetProperty("blocks");
 
         Expect(sections.GetArrayLength() == 1 &&
                sections[0].GetProperty("folderId").GetString() == folder.Id &&
@@ -1297,7 +1297,7 @@ try
 
         var otherConfig = await h.Get(deviceOther.Client, "/api/v1/startpage");
         Expect(otherConfig.GetProperty("profileId").GetString() == deviceOther.ProfileId &&
-               otherConfig.GetProperty("configuration").GetProperty("sections").GetArrayLength() == 0,
+               otherConfig.GetProperty("configuration").GetProperty("blocks").GetArrayLength() == 0,
             "Konfiguracja wyciekla do drugiego profilu.");
 
         using (var csrf = await SpSend(h.Admin, HttpMethod.Put, spPath,
@@ -1543,7 +1543,7 @@ try
             Expect(restored.GetProperty("logoVersion").GetInt64() <
                    second.GetProperty("logoVersion").GetInt64(),
                 "Nie odtworzono nizszej wersji logo.");
-            Expect(restored.GetProperty("configuration").GetProperty("sections")[0]
+            Expect(restored.GetProperty("configuration").GetProperty("blocks")[0]
                     .GetProperty("title").GetString() == "Z kopii",
                 "Nie przywrocono konfiguracji z kopii.");
 
@@ -1576,11 +1576,14 @@ try
                 await SpJson(staleLogo, 409);
 
             var unchanged = await isolated.Get(dev.Client, "/api/v1/startpage");
-            Expect(unchanged.GetProperty("configuration").GetProperty("sections")[0]
+            Expect(unchanged.GetProperty("configuration").GetProperty("blocks")[0]
                     .GetProperty("title").GetString() == "Z kopii",
                 "Stary formularz nadpisal przywrocona konfiguracje.");
         });
     });
+
+
+    await StartPageV2Tests.Run(h, deviceA, deviceOther);
 
 
     await h.Run("regresja 10: dwie kolejne kopie tworza dwa rozne gotowe pliki", async () =>
