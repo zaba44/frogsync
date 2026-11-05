@@ -217,6 +217,10 @@ class FakeArea {
 
 export class FakeDevice {
   extensionVersion = '0.3.1';
+  topSitesGranted = false;
+  topSitesCalls = 0;
+  topSiteRows: { title?: string; url: string }[] = [];
+  incognito = false;
   readonly bookmarks: FakeBookmarks;
   readonly local = new FakeArea();
   readonly session = new FakeArea();
@@ -230,6 +234,16 @@ const noop = async () => {};
 const listener = { addListener() {}, removeListener() {} };
 
 (globalThis as Record<string, unknown>).browser = {
+  extension: {
+    get inIncognitoContext() { return current.incognito; },
+  },
+  topSites: {
+    get: async () => {
+      current.topSitesCalls++;
+      if (!current.topSitesGranted) throw new Error('Brak zgody topSites');
+      return structuredClone(current.topSiteRows);
+    },
+  },
   runtime: {
     id: 'e2e',
     getURL: (p: string) => p,
@@ -260,5 +274,10 @@ const listener = { addListener() {}, removeListener() {} };
   alarms: { create() {}, get: async () => undefined, clear: async () => true, onAlarm: listener },
   action: { setIcon: noop, setTitle: noop, setBadgeText: noop, setBadgeBackgroundColor: noop },
   tabs: { create: noop, update: noop, query: async () => [], onCreated: listener },
-  permissions: { contains: async () => true, request: async () => true, remove: async () => true },
+  permissions: {
+    contains: async (p: { permissions?: string[] }) =>
+      p.permissions?.includes('topSites') ? current.topSitesGranted : true,
+    request: async () => true,
+    remove: async () => true,
+  },
 };

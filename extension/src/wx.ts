@@ -48,6 +48,8 @@ interface WxEvent<T extends (...args: never[]) => unknown> {
 }
 
 interface WxApi {
+  extension?: { inIncognitoContext?: boolean };
+  topSites?: { get(): Promise<{ title?: string; url: string }[]> };
   runtime: {
     id: string;
     getURL(path: string): string;
@@ -62,6 +64,10 @@ interface WxApi {
   storage: {
     local: WxStorageArea;
     session?: WxStorageArea;
+    onChanged?: WxEvent<(
+      changes: Record<string, { oldValue?: unknown; newValue?: unknown }>,
+      area: string,
+    ) => void>;
   };
   bookmarks: {
     getTree(): Promise<WxBookmarkNode[]>;
@@ -102,6 +108,7 @@ interface WxApi {
     contains(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
     request(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
     remove(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
+    onRemoved?: WxEvent<(perms: { permissions?: string[] }) => void>;
   };
 }
 

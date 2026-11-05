@@ -141,41 +141,101 @@ export function reportCursor(session: ServerSession, cursor: number): Promise<un
 
 // ---- strona startowa profilu (3.2) ----
 
-export interface StartPageSectionView { id: string; folderId: string; title: string | null; available: boolean; folderTitle: string | null }
-export interface StartPageEngineDef { id: string; name: string; url: string; color: string; suggest: 'google' | 'none' }
-export interface StartPageSnapshot {
-  profileId: string; generation: string; settingsVersion: number; logoVersion: number;
-  configuration: { version: number; sections: StartPageSectionView[]; engines: StartPageEngineDef[] };
-}
+export type {
+  StartPageSnapshot, CustomBlock, CustomTile, StartBlock, StartTemplate,
+} from './core/startpage.js';
+import {
+  parseStartPage, type StartPageSnapshot, type CustomBlock,
+} from './core/startpage.js';
 
-/** Warunkowy GET: null przy 304 (bez zmian od podanego ETag). Bledy jak w call(). */
-async function conditional(session: ServerSession, path: string, etag?: string): Promise<{ response: Response } | null> {
-  const headers: Record<string, string> = { 'X-FrogSync-Version': extensionVersion(), Authorization: `Bearer ${session.token}` };
-  if (etag) headers['If-None-Match'] = etag;
-  let response: Response;
-  try {
-    response = await fetch(session.url.replace(/\/+$/, '') + path,
-      { headers, cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(TIMEOUT_MS) });
-  } catch (err) {
-    throw new Offline(err instanceof Error ? err.message : String(err));
+export class StartPageConflict extends Error {
+  constructor(public readonly current: StartPageSnapshot) {
+    super('Układ zmienił się na serwerze.');
   }
-  if (response.status === 304) return null;
+}
+async function startRequest(
+  session: ServerSession, path: string, etag?: string, body?: unknown,
+): Promise<Response> {
+  try {
+    return await fetch(session.url.replace(/\/+$/, '') + '/api/v1/startpage' + path, {
+      method: body === undefined ? 'GET' : 'PUT',
+      headers: {
+        Authorization: 'Bearer ' + session.token,
+        'X-FrogSync-Version': extensionVersion(),
+        ...(etag ? { 'If-None-Match': etag } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(10000),
+    });
+  } catch (error) {
+    throw new Offline(error instanceof Error ? error.message : String(error));
+  }
+}
+async function startJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (text.length > 160000) throw new Error('Za duża konfiguracja strony startowej.');
+  return JSON.parse(text);
+}
+async function startError(response: Response, payload?: unknown): Promise<never> {
+  const body = (payload ?? await response.json().catch(() => ({}))) as {
+    error?: string; message?: string; current?: unknown;
+  };
   if (response.status === 401) throw new Unauthorized('Token odrzucony');
-  return { response };
+  if (response.status === 409 && body.error === 'STARTPAGE_CHANGED')
+    throw new StartPageConflict(parseStartPage(body.current));
+  throw new ServerError(
+    response.status, body.error ?? 'HTTP_' + response.status,
+    body.message ?? 'HTTP ' + response.status);
 }
-
-export async function startPage(session: ServerSession, etag?: string): Promise<{ etag: string; snapshot: StartPageSnapshot } | null> {
-  const r = await conditional(session, '/api/v1/startpage', etag);
-  if (!r) return null;
-  if (!r.response.ok) throw new ServerError(r.response.status, 'HTTP_' + r.response.status, `HTTP ${r.response.status}`);
-  return { etag: r.response.headers.get('ETag') ?? '', snapshot: await r.response.json() as StartPageSnapshot };
+export async function startPage(
+  session: ServerSession, etag?: string,
+): Promise<{ etag: string; snapshot: StartPageSnapshot } | null> {
+  const response = await startRequest(session, '', etag);
+  if (response.status === 304) return null;
+  if (!response.ok) return startError(response);
+  return {
+    etag: response.headers.get('ETag') ?? '',
+    snapshot: parseStartPage(await startJson(response)),
+  };
 }
-
-/** Logo profilu; 'none' gdy profil go nie ma (404), null przy 304. */
-export async function startPageLogo(session: ServerSession, etag?: string): Promise<{ etag: string; type: string; bytes: ArrayBuffer } | 'none' | null> {
-  const r = await conditional(session, '/api/v1/startpage/logo', etag);
-  if (!r) return null;
-  if (r.response.status === 404) return 'none';
-  if (!r.response.ok) throw new ServerError(r.response.status, 'HTTP_' + r.response.status, `HTTP ${r.response.status}`);
-  return { etag: r.response.headers.get('ETag') ?? '', type: r.response.headers.get('Content-Type') ?? 'image/png', bytes: await r.response.arrayBuffer() };
+export interface StartPageImage {
+  etag: string; type: string; bytes: ArrayBuffer; generation: string; version: number;
+}
+export async function startPageImage(
+  session: ServerSession, name: 'logo' | 'background', etag?: string,
+): Promise<StartPageImage | 'none' | null> {
+  const response = await startRequest(session, '/' + name, etag);
+  if (response.status === 304) return null;
+  const generation = response.headers.get('X-FrogSync-Generation') ?? '';
+  const version = Number(response.headers.get(
+    name === 'logo' ? 'X-FrogSync-Logo-Version' : 'X-FrogSync-Background-Version'));
+  if (response.status === 404 && generation === session.generation) return 'none';
+  if (!response.ok) return startError(response);
+  const type = (response.headers.get('Content-Type') ?? '').split(';')[0].trim();
+  const maximum = name === 'logo' ? 512 * 1024 : 2 * 1024 * 1024;
+  if (generation !== session.generation || !Number.isSafeInteger(version) || version < 0 ||
+      !['image/png', 'image/jpeg', 'image/webp'].includes(type) ||
+      Number(response.headers.get('Content-Length')) > maximum)
+    throw new Error('Niepoprawny obraz profilu.');
+  const bytes = await response.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > maximum)
+    throw new Error('Niepoprawny rozmiar obrazu.');
+  return { etag: response.headers.get('ETag') ?? '', type, bytes, generation, version };
+}
+export function startPageLogo(session: ServerSession, etag?: string) {
+  return startPageImage(session, 'logo', etag);
+}
+export async function saveStartPageCustom(
+  session: ServerSession, settingsVersion: number, blocks: CustomBlock[],
+): Promise<StartPageSnapshot> {
+  const response = await startRequest(session, '/custom', undefined, {
+    generation: session.generation, settingsVersion, blocks,
+  });
+  const payload = await startJson(response);
+  if (!response.ok) return startError(response, payload);
+  const snapshot = parseStartPage(payload);
+  if (snapshot.profileId !== session.profile.id || snapshot.generation !== session.generation)
+    throw new Error('Odpowiedź należy do innego profilu lub generacji.');
+  return snapshot;
 }

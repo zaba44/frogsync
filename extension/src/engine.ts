@@ -456,6 +456,70 @@ export async function restoreConflict(id: string): Promise<SyncStatus> {
   });
 }
 
+/** Edycja z nowej karty: zwykle API zakladek, bez wlasnych operacji /ops. */
+export async function editStartBookmark(
+  command: import('./core/startpage.js').StartBookmarkEdit,
+): Promise<void> {
+  if (!command || !['update', 'delete', 'move'].includes(command.action) || !command.base?.id)
+    throw new Error('Niepoprawne polecenie edycji.');
+  await exclusive(MAIN_LOCK, async () => {
+    await noRestoreInProgress();
+    const s = await loadState();
+    if (s?.bootstrap) throw new Error('Najpierw dokończ pierwszą synchronizację.');
+    const fresh = async () => {
+      const [node] = await wx.bookmarks.get(command.base.id);
+      if (!node || node.unmodifiable || !node.parentId ||
+          Object.values(nativeRootIdsForEdit()).includes(node.id) ||
+          node.title !== command.base.title || node.url !== command.base.url ||
+          node.parentId !== command.base.parentId)
+        throw new Error('Zakładka zmieniła się. Zamknij formularz i odczytaj ją ponownie.');
+      return node;
+    };
+    const nativeRootIdsForEdit = () =>
+      Object.fromEntries(SERVER_ROOTS.map(root => [root, nativeRootId(root)]));
+    const node = await fresh();
+    if (command.action === 'move') {
+      const order = (await wx.bookmarks.getChildren(node.parentId!)).map(child => child.id);
+      if (JSON.stringify(order) !== JSON.stringify(command.order) ||
+          command.beforeId === node.id ||
+          (command.beforeId !== null && !order.includes(command.beforeId)))
+        throw new Error('Kolejność zmieniła się. Odśwież widok.');
+      const without = order.filter(id => id !== node.id);
+      const index = command.beforeId === null ? without.length : without.indexOf(command.beforeId);
+      await moveWithin(node.id, node.parentId!, index, order);
+    } else if (command.action === 'update') {
+      const title = command.title.trim();
+      if (!title || title.length > 200 || /[\u0000-\u001f\u007f]/.test(title))
+        throw new Error('Tytuł: 1–200 znaków.');
+      const { httpUrl } = await import('./core/startpage.js');
+      const url = node.url === undefined ? undefined : httpUrl(command.url ?? '');
+      await fresh();
+      await wx.bookmarks.update(node.id, {
+        title, ...(url === undefined ? {} : { url }),
+      });
+    } else {
+      const subtree = async () => {
+        const stack = [...await wx.bookmarks.getTree()];
+        while (stack.length) {
+          const next = stack.pop()!;
+          if (next.id === node.id) return JSON.stringify(next);
+          stack.push(...(next.children ?? []));
+        }
+        throw new Error('Wpis nie jest już dostępny.');
+      };
+      const before = await subtree();
+      await checkpoint('local-delete', s, { source: 'startpage', id: node.id });
+      await fresh();
+      if (await subtree() !== before)
+        throw new Error('Zawartość zmieniła się podczas zapisu punktu przywracania. Ponów decyzję.');
+      if (node.url === undefined) await wx.bookmarks.removeTree(node.id);
+      else await wx.bookmarks.remove(node.id);
+    }
+    await setLocal({ [KEYS.pending]: Date.now() });
+  });
+}
+
+
 export async function clearConflicts(): Promise<SyncStatus> {
   return exclusive(MAIN_LOCK, async () => {
     const s = await loadState();
@@ -501,7 +565,11 @@ export async function pairWith(url: string, code: string, label: string, mode: '
 
     // Nowe parowanie = czysty stan synchronizacji. Zakladki w przegladarce zostaja.
     // Bootstrap zapisany PRZED pierwszym przebiegiem: do jego konca nic nie wyjdzie na serwer.
-    await setLocal({ [KEYS.server]: session, engineState: { ...EMPTY_STATE, bootstrap: { mode, startedAt: Date.now() } }, intents: {} });
+    await setLocal({
+      [KEYS.server]: session,
+      engineState: { ...EMPTY_STATE, bootstrap: { mode, startedAt: Date.now() } },
+      intents: {}, startpageCache: null, startpageMap: null, startpageAttempt: null,
+    });
     return syncInner();
   });
 }
@@ -509,7 +577,10 @@ export async function pairWith(url: string, code: string, label: string, mode: '
 export async function unpair(): Promise<void> {
   await exclusive(MAIN_LOCK, async () => {
     await noRestoreInProgress();
-    await setLocal({ [KEYS.server]: null, engineState: EMPTY_STATE, intents: {} });
+    await setLocal({
+      [KEYS.server]: null, engineState: EMPTY_STATE, intents: {},
+      startpageCache: null, startpageMap: null, startpageAttempt: null,
+    });
     await saveStatus({
       connection: 'unpaired', pendingOps: 0, lastError: undefined, consecutiveFailures: 0,
       blockedDeletions: undefined, blockedLocalDeletions: undefined,

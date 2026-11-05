@@ -56,7 +56,7 @@ const CHROME_KEY =
   'cADW/AH/qdNEOtfQyIRbB6WeCtuekc7ArwIDAQAB';
 
 const ENTRY_POINTS = ['src/background.ts', 'src/popup.ts', 'src/options.ts', 'src/newtab.ts'];
-const STATIC_FILES = ['ui/popup.html', 'ui/options.html', 'ui/newtab.html', 'ui/style.css', 'ui/newtab.css'];
+const STATIC_FILES = ['ui/popup.html', 'ui/options.html', 'ui/newtab.html', 'ui/style.css', 'ui/newtab.css', 'ui/newtab-init.js'];
 
 // ============================================================
 // Manifesty
@@ -73,6 +73,7 @@ function manifestFor(target) {
     version: VERSION,
     description: 'Synchronizacja zakładek między przeglądarkami przez własny serwer.',
     permissions: ['bookmarks', 'storage', 'alarms'],
+    optional_permissions: ['topSites'],
     // Adres serwera kazdy ma inny, wiec zgoda na polaczenie jest prosba
     // w chwili parowania — wylacznie dla tego jednego adresu, a nie dla
     // wszystkich stron, jak bylby to staly wpis host_permissions.
@@ -89,7 +90,7 @@ function manifestFor(target) {
       ...shared,
       key: CHROME_KEY,
       // Tylko Opera: rozpoznanie Speed Dialu na nowej karcie; proszone przy wlaczeniu opcji
-      optional_permissions: ['tabs'],
+      optional_permissions: ['tabs', 'topSites', 'favicon'],
       background: { service_worker: 'background.js' },
       // Ponizej tej wersji Chrome nie zwracal obietnic ze wszystkich uzywanych API
       minimum_chrome_version: '116',

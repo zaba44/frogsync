@@ -131,6 +131,32 @@
       </ul>
     </details>
 
+    <h3>Wygląd i dane lokalne</h3>
+    <label class="field"><span>Szablon w tej przeglądarce</span>
+      <select id="template-override">
+        <option value="profile">Z profilu serwera</option>
+        <option value="classic">Classic</option>
+        <option value="compact">Compact</option>
+        <option value="glass">Glass</option>
+        <option value="live">Live</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="show-top-sites">
+      <span>Najczęściej odwiedzane
+        <span class="desc">Opcjonalna zgoda topSites. Lista pozostaje w tej przeglądarce i nie trafia na serwer.</span>
+      </span>
+    </label>
+    <label class="check" id="favicon-option"><input type="checkbox" id="show-favicons">
+      <span>Ikony stron z przeglądarki
+        <span class="desc">Tylko Chromium; opcjonalna zgoda favicon. Bez niej i w Firefoksie pozostają litery.</span>
+      </span>
+    </label>
+    <label class="check"><input type="checkbox" id="focus-search">
+      <span>Kursor w polu wyszukiwania FrogSync
+        <span class="desc">Domyślnie włączone. Fokus tylko raz przy otwarciu strony; odświeżanie go nie ponawia.</span>
+      </span>
+    </label>
+
     <h3>Wyszukiwanie</h3>
     <label class="field"><span>Wyszukiwarka dla klawisza Enter</span><select id="default-engine"></select></label>
     <label class="check"><input type="checkbox" id="enter-address">
@@ -145,6 +171,7 @@
 
     <h3>Przyciski wyszukiwarek</h3>
     <div class="muted">Przypięte wyszukiwarki pojawiają się jako przyciski pod polem wyszukiwania. Najwyżej <span id="pin-max"></span>; przypięto <span id="pin-count"></span>.</div>
+    <p id="engine-new-notice" class="muted" hidden>W profilu są nowe wyszukiwarki — przypnij je poniżej.</p>
     <div id="engine-list" class="list"></div>
   </div>
 

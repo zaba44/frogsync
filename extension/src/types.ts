@@ -67,12 +67,19 @@ export interface Settings {
   pinnedEngines: string[];
   /** Wyszukiwarka dla Enter. */
   defaultEngine: string;
+  /** Nadpisanie lokalne; profile = wybor z panelu. */
+  templateOverride: 'profile' | import('./core/startpage.js').StartTemplate;
+  showTopSites: boolean;
+  showFavicons: boolean;
+  /** Jednorazowy fokus przy otwarciu strony. */
+  focusSearch: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   autoSync: true, pollMinutes: 1, startPage: true, operaNewTab: false,
   searchBookmarks: false, googleSuggest: false, enterOpensAddress: true,
   pinnedEngines: ['google', 'allegro', 'youtube', 'maps'], defaultEngine: 'google',
+  templateOverride: 'profile', showTopSites: false, showFavicons: false, focusSearch: true,
 };
 
 export type ConnectionState =
@@ -154,6 +161,10 @@ export type Message =
   | { type: 'UNPAIR' }
   | { type: 'CONFIRM_DELETIONS'; which: 'remote' | 'local' }
   | { type: 'GET_SETTINGS' }
+  | { type: 'EDIT_START_BOOKMARK'; command: import('./core/startpage.js').StartBookmarkEdit }
+  | { type: 'GET_STARTPAGE_DRAFT' }
+  | { type: 'SAVE_STARTPAGE_CUSTOM'; draft: import('./core/startpage.js').CustomDraft }
+  | { type: 'DISCARD_STARTPAGE_DRAFT'; key: string; id: string }
   | { type: 'SAVE_SETTINGS'; settings: Partial<Settings> }
   | { type: 'GET_FILTERS' }
   | { type: 'SAVE_FILTERS'; config: unknown }

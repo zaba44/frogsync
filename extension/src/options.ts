@@ -3,7 +3,8 @@ import { BUILTIN_RULES, type FilterConfig } from './filters.js';
 import { parseBookmarkHtml, type BookmarkHtmlSource } from './bookmark-html.js';
 import { isOpera } from './opera-newtab.js';
 import { BUILTIN_ENGINES, DEFAULT_ENGINE, GOOGLE_SUGGEST_ORIGIN, MAX_PINNED, engineById, normalizePinned, type SearchEngine } from './core/search.js';
-import { cacheKey, STARTPAGE_CACHE, type StartPageCache } from './startpage-cache.js';
+import { readStartPage, STARTPAGE_CACHE } from './startpage-cache.js';
+import { TEMPLATES, type StartTemplate } from './core/startpage.js';
 import { KEYS } from './storage.js';
 import type { RestorePlan, RestoreTree } from './core/restore.js';
 import type { RestorePointSummary, RestoreReason } from './restore-points.js';
@@ -460,17 +461,39 @@ let startSettings: Settings;
 /** Katalog wyszukiwarek: z profilu (cache), gdy ustawiony w panelu, inaczej wbudowany. */
 let catalog: SearchEngine[] = [...BUILTIN_ENGINES];
 
-async function loadCatalog(): Promise<void> {
-  const got = await wx.storage.local.get([KEYS.server, STARTPAGE_CACHE]);
-  const session = got[KEYS.server] as ServerSession | null | undefined;
-  const cache = got[STARTPAGE_CACHE] as StartPageCache | null | undefined;
-  const engines = session && cache && cache.key === cacheKey(session) ? cache.snapshot.configuration.engines : [];
-  catalog = engines.length > 0 ? engines : [...BUILTIN_ENGINES];
+let profileCatalog = false;
+let profileTemplate: StartTemplate = 'classic';
+
+function mirrorStart(): void {
+  const template = startSettings.templateOverride === 'profile'
+    ? profileTemplate : startSettings.templateOverride;
+  try {
+    localStorage.setItem('frogsync-start-view', JSON.stringify({
+      template, startPage: startSettings.startPage,
+    }));
+  } catch { /* Tryb prywatny. */ }
 }
+async function loadCatalog(): Promise<void> {
+  const { cache } = await readStartPage();
+  const engines = cache?.snapshot.configuration.engines ?? [];
+  profileCatalog = engines.length > 0;
+  profileTemplate = cache?.snapshot.configuration.template ?? 'classic';
+  catalog = engines.length ? engines : [...BUILTIN_ENGINES];
+}
+wx.storage.onChanged?.addListener((changes, area) => {
+  if (area !== 'local' || !startSettings ||
+      !(KEYS.server in changes || STARTPAGE_CACHE in changes)) return;
+  void loadCatalog()
+    .then(() => { renderEngineList(); mirrorStart(); })
+    .catch(err => show(errorText(err)));
+});
 
 async function saveStart(patch: Partial<Settings>): Promise<void> {
   startSettings = { ...startSettings, ...patch };
-  try { await send({ type: 'SAVE_SETTINGS', settings: patch }); }
+  try {
+    startSettings = await send<Settings>({ type: 'SAVE_SETTINGS', settings: patch });
+    mirrorStart();
+  }
   catch (err) { show(errorText(err)); }
 }
 
@@ -478,6 +501,11 @@ function renderEngineList(): void {
   const list = $('engine-list');
   list.replaceChildren();
   const pinned = normalizePinned(startSettings.pinnedEngines, catalog);
+  const select = $('default-engine') as HTMLSelectElement;
+  select.replaceChildren(...catalog.map(e => new Option(e.name, e.id)));
+  select.value = (engineById(startSettings.defaultEngine, catalog) ??
+    engineById(DEFAULT_ENGINE, catalog) ?? catalog[0]).id;
+  $('engine-new-notice').hidden = !profileCatalog || catalog.every(e => pinned.includes(e.id));
   $('pin-count').textContent = String(pinned.length);
   $('pin-max').textContent = String(MAX_PINNED);
 
@@ -532,6 +560,47 @@ function renderEngineList(): void {
 async function initStartPage(settings: Settings): Promise<void> {
   startSettings = settings;
   await loadCatalog();
+  mirrorStart();
+
+  const template = $('template-override') as HTMLSelectElement;
+  template.value = settings.templateOverride === 'profile' || TEMPLATES.includes(settings.templateOverride)
+    ? settings.templateOverride : 'profile';
+  template.addEventListener('change', () => void saveStart({
+    templateOverride: template.value as Settings['templateOverride'],
+  }));
+
+  const focus = $('focus-search') as HTMLInputElement;
+  focus.checked = settings.focusSearch;
+  focus.addEventListener('change', () => void saveStart({ focusSearch: focus.checked }));
+
+  const top = $('show-top-sites') as HTMLInputElement;
+  top.checked = settings.showTopSites;
+  top.addEventListener('change', async () => {
+    if (top.checked && !(await wx.permissions.request({ permissions: ['topSites'] }))) {
+      top.checked = false;
+      show('Bez zgody nie odczytuję najczęściej odwiedzanych stron.');
+      return;
+    }
+    await saveStart({ showTopSites: top.checked });
+    if (!top.checked) try {
+      await wx.permissions.remove({ permissions: ['topSites'] });
+    } catch { /* Juz cofnieta. */ }
+  });
+
+  $('favicon-option').hidden = isGecko();
+  const favicons = $('show-favicons') as HTMLInputElement;
+  favicons.checked = settings.showFavicons;
+  favicons.addEventListener('change', async () => {
+    if (favicons.checked && !(await wx.permissions.request({ permissions: ['favicon'] }))) {
+      favicons.checked = false;
+      show('Ikony pozostaną literami bez tej zgody.');
+      return;
+    }
+    await saveStart({ showFavicons: favicons.checked });
+    if (!favicons.checked) try {
+      await wx.permissions.remove({ permissions: ['favicon'] });
+    } catch { /* Juz cofnieta. */ }
+  });
 
   const startPage = $('start-page') as HTMLInputElement;
   startPage.checked = settings.startPage;
@@ -562,8 +631,7 @@ async function initStartPage(settings: Settings): Promise<void> {
   });
 
   const select = $('default-engine') as HTMLSelectElement;
-  for (const e of catalog) select.append(new Option(e.name, e.id));
-  select.value = engineById(settings.defaultEngine, catalog) ? settings.defaultEngine : (engineById(DEFAULT_ENGINE, catalog) ? DEFAULT_ENGINE : catalog[0].id);
+  // Opcje select buduje renderEngineList z biezacego katalogu.
   select.addEventListener('change', () => void saveStart({ defaultEngine: select.value }));
 
   const enterAddress = $('enter-address') as HTMLInputElement;

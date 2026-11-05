@@ -5,12 +5,15 @@ import * as api from './api.js';
 import {
   syncOnce, loadStatus, pairWith, unpair, confirmDeletions, conflictNotes, clearConflicts,
   previewRestore, runRestore, listRestorePoints, previewUndo, undoToPoint, exportPointHtml,
-  restoreConflict,
+  restoreConflict, editStartBookmark,
 } from './engine.js';
 import { loadFilterConfig, saveFilterConfig, type FilterConfig } from './filters.js';
 import { detectBrowser } from './identity.js';
 import { registerOperaNewTab } from './opera-newtab.js';
-import { refreshStartPage, clearStartPage } from './startpage-cache.js';
+import { refreshStartPage } from './startpage-cache.js';
+import {
+  getCustomDraft, saveCustomDraft, discardCustomDraft,
+} from './startpage-edit.js';
 import { DEFAULT_SETTINGS, type Message, type Settings, type SyncStatus } from './types.js';
 
 // Alarm wznawia zapisane zadania po restarcie workera. Zdarzenia zakladek
@@ -19,6 +22,7 @@ import { DEFAULT_SETTINGS, type Message, type Settings, type SyncStatus } from '
 registerOperaNewTab();
 
 const SYNC_ALARM = 'frogsync-sync';
+const STARTPAGE_ALARM = 'frogsync-startpage';
 const DEBOUNCE_MS = 3000;
 let debounce: ReturnType<typeof setTimeout> | null = null;
 
@@ -27,6 +31,8 @@ async function settings(): Promise<Settings> {
 }
 
 async function ensureAlarm(): Promise<void> {
+  if (!(await wx.alarms.get(STARTPAGE_ALARM)))
+    wx.alarms.create(STARTPAGE_ALARM, { delayInMinutes: 0.1, periodInMinutes: 5 });
   const s = await settings();
   const period = Math.max(1, Math.min(60, s.pollMinutes));
   const existing = await wx.alarms.get(SYNC_ALARM);
@@ -39,14 +45,12 @@ async function ensureAlarm(): Promise<void> {
 
 async function withBadge(status: SyncStatus): Promise<SyncStatus> {
   await paintBadge(status);
+  void refreshStartPage();
   return status;
 }
 
 async function run(): Promise<SyncStatus> {
-  const status = await withBadge(await syncOnce());
-  // Po przebiegu: konfiguracja strony startowej (najwyzej co 5 min) i mapa folderow sekcji
-  if (status.connection === 'ok') await refreshStartPage();
-  return status;
+  return withBadge(await syncOnce());
 }
 
 async function paintBadge(status: SyncStatus): Promise<void> {
@@ -96,7 +100,10 @@ wx.bookmarks.onChanged.addListener(scheduleSoon);
 wx.bookmarks.onMoved.addListener(scheduleSoon);
 wx.bookmarks.onChildrenReordered?.addListener(scheduleSoon);
 wx.bookmarks.onImportEnded?.addListener(scheduleSoon);
-wx.alarms.onAlarm.addListener(alarm => { if (alarm.name === SYNC_ALARM) void run(); });
+wx.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === SYNC_ALARM) void run();
+  if (alarm.name === STARTPAGE_ALARM) void refreshStartPage();
+});
 
 wx.runtime.onInstalled.addListener(() => { void (async () => {
   await ensureAlarm();
@@ -108,7 +115,11 @@ wx.runtime.onInstalled.addListener(() => { void (async () => {
 })(); });
 
 wx.runtime.onStartup.addListener(() => { void (async () => { await ensureAlarm(); await run(); })(); });
-void (async () => { await ensureAlarm(); await paintBadge(await loadStatus()); })();
+void (async () => {
+  await ensureAlarm();
+  await paintBadge(await loadStatus());
+  void refreshStartPage();
+})();
 
 wx.runtime.onMessage.addListener((raw, _sender, sendResponse) => {
   void (async () => {
@@ -137,13 +148,12 @@ async function handle(message: Message): Promise<unknown> {
       const browser = await detectBrowser();
       const paired = await withBadge(await pairWith(message.url, message.code, `${browser.name} ${browser.version.split('.')[0]}`.trim(),
         message.mode, message.expectContent));
-      if (paired.connection === 'ok') await refreshStartPage(true);
+      void refreshStartPage(true);
       return paired;
     }
 
     case 'UNPAIR':
       await unpair();
-      await clearStartPage();
       return withBadge(await loadStatus());
 
     case 'CONFIRM_DELETIONS':
@@ -157,6 +167,20 @@ async function handle(message: Message): Promise<unknown> {
 
     case 'GET_SETTINGS':
       return settings();
+
+    case 'EDIT_START_BOOKMARK':
+      await editStartBookmark(message.command);
+      return { ok: true };
+
+    case 'GET_STARTPAGE_DRAFT':
+      return getCustomDraft();
+
+    case 'SAVE_STARTPAGE_CUSTOM':
+      return saveCustomDraft(message.draft);
+
+    case 'DISCARD_STARTPAGE_DRAFT':
+      await discardCustomDraft(message.key, message.id);
+      return { ok: true };
 
     case 'SAVE_SETTINGS': {
       const next = { ...(await settings()), ...message.settings };

@@ -2,33 +2,69 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8">
-  <title>Nowa karta</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nowa karta — FrogSync</title>
   <link rel="icon" href="icons/icon32.png">
+  <script src="newtab-init.js"></script>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="newtab.css">
 </head>
 <body>
+<img id="glass-background" class="glass-background" alt="" hidden>
 <main class="start">
   <header class="start-head">
     <img src="icons/icon128.png" alt="" class="start-logo" id="logo">
+    <div class="clock" aria-hidden="true">
+      <div id="clock-time"></div><div id="clock-date"></div>
+    </div>
     <form id="search-form" class="search" role="search" autocomplete="off">
       <input id="search" type="search" placeholder="Szukaj" aria-label="Szukaj"
-        role="combobox" aria-autocomplete="list" aria-controls="suggestions" aria-expanded="false">
+        role="combobox" aria-autocomplete="list"
+        aria-controls="suggestions" aria-expanded="false">
       <div id="suggestions" class="suggestions" role="listbox" hidden></div>
     </form>
     <div id="engines" class="engines" hidden></div>
+    <p id="new-engines" class="muted" hidden>W profilu są nowe wyszukiwarki —
+      <a href="options.html">przypnij je w ustawieniach</a>.</p>
   </header>
-
-  <nav id="crumbs" class="crumbs"></nav>
-  <div id="sections" class="sections" hidden></div>
-  <section id="tiles" class="tiles" aria-label="Pasek zakładek"></section>
-  <p id="empty" class="muted center" hidden>Pasek zakładek jest pusty.</p>
+  <div class="page-tools">
+    <button id="edit-toggle" type="button" aria-pressed="false">Edytuj</button>
+    <a href="options.html">Ustawienia</a>
+  </div>
+  <p id="page-message" class="muted" role="status" aria-live="polite"></p>
+  <p id="draft-banner" class="draft-banner" hidden>Masz niezapisaną zmianę własnych kafelków.
+    <button type="button" id="resume-draft">Wznów zapis</button></p>
+  <nav id="block-links" class="block-links" aria-label="Bloki strony startowej"></nav>
+  <div id="sections" class="sections"></div>
 </main>
-
 <div class="blank-only">
   <button id="show-anyway" class="linkish">Pokaż kafelki FrogSync</button>
 </div>
-
+<dialog id="tile-dialog" class="tile-dialog" aria-labelledby="edit-heading">
+  <form id="edit-form">
+    <h2 id="edit-heading">Edycja kafelków</h2>
+    <fieldset id="edit-fields">
+      <label class="field"><span>Tytuł</span><input id="edit-title" maxlength="200"></label>
+      <label class="field" id="edit-url-label"><span>Adres HTTP lub HTTPS</span>
+        <input id="edit-url" maxlength="2048" spellcheck="false"></label>
+      <div id="edit-color-row">
+        <label class="check"><input type="checkbox" id="edit-use-color">
+          <span>Własny kolor</span></label>
+        <input type="color" id="edit-color" aria-label="Kolor kafelka">
+      </div>
+    </fieldset>
+    <p id="edit-message" role="status" aria-live="polite"></p>
+    <details id="custom-comparison" hidden>
+      <summary>Porównanie własnych kafelków</summary>
+      <h3>Twoja lista</h3><pre id="desired-custom"></pre>
+      <h3>Aktualnie na serwerze</h3><pre id="server-custom"></pre>
+    </details>
+    <div class="actions">
+      <button type="submit" id="edit-save" class="primary">Zapisz</button>
+      <button type="button" id="edit-cancel">Anuluj</button>
+    </div>
+  </form>
+</dialog>
 <script src="newtab.js"></script>
 </body>
 </html>

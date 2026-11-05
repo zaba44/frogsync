@@ -1157,17 +1157,20 @@ await scenario('strona startowa: konfiguracja profilu trafia do cache, offline z
   const put = await fetch(`${baseUrl}/admin/api/profiles/${pid}/startpage`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-FrogSync': '1', Cookie: cookie },
     body: JSON.stringify({ settingsVersion: current.settingsVersion, generation: current.generation,
-      configuration: { version: 1, sections: [{ id: 's1', folderId, title: 'Moje' }],
+      configuration: { version: 2, configured: true, template: 'glass',
+        blocks: [{ id: 's1', type: 'folder', folderId, title: 'Moje' }],
         engines: [{ id: 'ceneo', name: 'Ceneo', url: 'https://www.ceneo.pl/;szukaj-%s', color: '#ff7a00', suggest: 'none' }] } }),
   });
   expect(put.ok, `zapis konfiguracji w panelu: HTTP ${put.status}`);
 
   await sp.refreshStartPage(true);
   const cache = await getLocal<any>(sp.STARTPAGE_CACHE, null);
-  const map = await getLocal<Record<string, string>>(sp.STARTPAGE_MAP, {});
-  expect(cache?.snapshot.configuration.sections[0]?.title === 'Moje', 'sekcja nie trafila do cache');
+  const map = await getLocal<{ folders: Record<string, string> }>(
+    sp.STARTPAGE_MAP, { folders: {} });
+  expect(cache?.snapshot.configuration.version === 2 &&
+    cache.snapshot.configuration.blocks[0]?.title === 'Moje', 'blok nie trafil do cache v2');
   expect(cache.snapshot.configuration.engines[0]?.id === 'ceneo', 'katalog wyszukiwarek profilu nie trafil do cache');
-  expect(map[folderId] === localFolder, 'mapa folderu sekcji nie wskazuje lokalnego folderu');
+  expect(map.folders[folderId] === localFolder, 'mapa folderu nie wskazuje lokalnego folderu');
   const etag = cache.etag;
 
   // Bez zmian na serwerze: 304, cache zostaje, ETag ten sam
@@ -1176,10 +1179,16 @@ await scenario('strona startowa: konfiguracja profilu trafia do cache, offline z
 
   // Offline: ostatnie poprawne dane zostaja
   const session = await getLocal<any>(KEYS.server, null);
-  await storage.setLocal({ [KEYS.server]: { ...session, url: 'https://127.0.0.1:1' } });
-  await sp.refreshStartPage(true);
-  await storage.setLocal({ [KEYS.server]: session });
-  expect((await getLocal<any>(sp.STARTPAGE_CACHE, null))?.snapshot.configuration.sections.length === 1, 'offline skasowal cache');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes('/api/v1/startpage')) throw new TypeError('offline');
+    return realFetch(input, init);
+  };
+  try { await sp.refreshStartPage(true); }
+  finally { globalThis.fetch = realFetch; }
+  expect((await sp.readStartPage()).cache?.snapshot.configuration.blocks.length === 1,
+    'offline skasowal cache');
 
   // Inny profil (np. ponowne parowanie): stary cache nie pasuje do klucza
   await storage.setLocal({ [KEYS.server]: { ...session, profile: { ...session.profile, id: 'inny' } } });
@@ -1190,6 +1199,157 @@ await scenario('strona startowa: konfiguracja profilu trafia do cache, offline z
   await sp.clearStartPage();
   expect(!(await getLocal<any>(sp.STARTPAGE_CACHE, null)), 'rozlaczenie nie wyczyscilo cache');
 });
+
+await scenario('strona startowa v2: migracja starego cache i ochrona zakresu', async () => {
+  const sp = await import('../src/startpage-cache.js');
+  const a = new FakeDevice('Cache v1', 'chromium'); use(a);
+  const session = {
+    url: 'https://cache.example', token: 't', deviceId: 'd', deviceName: 'd',
+    profile: { id: 'p', name: 'p' }, generation: 'g',
+  };
+  const folderId = '11111111-1111-1111-1111-111111111111';
+  await a.local.set({
+    [KEYS.server]: session,
+    [sp.STARTPAGE_CACHE]: {
+      key: session.url + '|p|g', etag: 'old', fetchedAt: Date.now(),
+      snapshot: {
+        profileId: 'p', generation: 'g', settingsVersion: 7, logoVersion: 0,
+        configuration: {
+          version: 1,
+          sections: [{
+            id: 's', folderId, title: 'Stara', available: true, folderTitle: 'Folder',
+          }],
+          engines: [],
+        },
+      },
+    },
+  });
+  const view = await sp.readStartPage();
+  expect(view.cache?.snapshot.configuration.version === 2 &&
+    view.cache.snapshot.configuration.blocks[0].type === 'folder',
+    'nie odczytano v1 jako v2');
+  await a.local.set({ [KEYS.server]: { ...session, generation: 'new' } });
+  expect(!(await sp.readStartPage()).cache, 'stary cache widoczny w nowej generacji');
+});
+
+await scenario('strona startowa v2: topSites tylko po lokalnej zgodzie, bez zapisu i sieci', async () => {
+  const { localTopSites } = await import('../src/startpage-edit.js');
+  const a = new FakeDevice('Top sites', 'chromium'); use(a);
+  a.topSiteRows = [
+    { title: 'Prywatna lista', url: 'https://private-top.example/' },
+    { title: 'Duplikat', url: 'https://private-top.example/' },
+    { title: 'Zly schemat', url: 'javascript:alert(1)' },
+  ];
+  expect((await localTopSites(false)).length === 0 && Number(a.topSitesCalls) === 0,
+    'odczyt przy wylaczonej opcji');
+  expect((await localTopSites(true)).length === 0 && Number(a.topSitesCalls) === 0,
+    'odczyt bez zgody');
+  a.topSitesGranted = true;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('topSites nie moze wywolywac sieci'); };
+  try {
+    expect((await localTopSites(true)).length === 1 && Number(a.topSitesCalls) === 1,
+      'filtr lub deduplikacja topSites');
+    a.incognito = true;
+    expect((await localTopSites(true)).length === 0 && Number(a.topSitesCalls) === 1,
+      'topSites w oknie prywatnym');
+    expect(!JSON.stringify(await a.local.get(null)).includes('private-top.example'),
+      'topSites zapisano w storage');
+  } finally { globalThis.fetch = realFetch; }
+});
+
+await scenario('nowa karta: fokus tylko przy starcie i bez zmiany wpisanego tekstu po cache', async () => {
+  const a = new FakeDevice('Newtab DOM', 'chromium'); use(a);
+  await a.local.set({ [KEYS.settings]: { startPage: true, focusSearch: true } });
+  const g = globalThis as any;
+  const old = Object.fromEntries(
+    ['document', 'window', 'HTMLButtonElement', 'setInterval', 'location'].map(k => [k, g[k]]));
+  const browser = g.browser;
+  const oldChanged = browser.storage.onChanged;
+  let storageListener: ((changes: any, area: string) => void) | undefined;
+  let focusCalls = 0;
+
+  class Node {
+    children: any[] = [];
+    handlers: Record<string, ((event: any) => void)[]> = {};
+    attributes = new Map<string, string>();
+    style = { setProperty() {} };
+    dataset = {};
+    hidden = false;
+    value = '';
+    textContent = '';
+    open = false;
+    classList = { add() {}, remove() {}, toggle() {} };
+    constructor(public tagName: string, public id = '') {}
+    append(...values: any[]) { this.children.push(...values); }
+    replaceChildren(...values: any[]) { this.children = values; }
+    get childElementCount() { return this.children.length; }
+    setAttribute(k: string, v: string) { this.attributes.set(k, v); }
+    getAttribute(k: string) { return this.attributes.get(k) ?? null; }
+    removeAttribute(k: string) { this.attributes.delete(k); }
+    addEventListener(k: string, fn: (event: any) => void) {
+      (this.handlers[k] ??= []).push(fn);
+    }
+    focus() {
+      if (this.id === 'search') focusCalls++;
+      doc.activeElement = this;
+    }
+    querySelector(selector: string): any {
+      for (const child of this.children)
+        if (child?.tagName?.toLowerCase() === selector) return child;
+      return null;
+    }
+  }
+  class Button extends Node { constructor() { super('BUTTON'); } }
+  const nodes = new Map<string, Node>();
+  const doc: any = {
+    body: new Node('BODY'),
+    documentElement: new Node('HTML'),
+    visibilityState: 'visible',
+    activeElement: null,
+    handlers: {} as Record<string, ((e: any) => void)[]>,
+    getElementById(id: string) {
+      if (!nodes.has(id)) nodes.set(id, new Node(id === 'search' ? 'INPUT' : 'DIV', id));
+      return nodes.get(id);
+    },
+    createElement(tag: string) {
+      return tag === 'button' ? new Button() : new Node(tag.toUpperCase());
+    },
+    createTextNode(text: string) { return { textContent: text }; },
+    addEventListener(k: string, fn: (e: any) => void) {
+      (this.handlers[k] ??= []).push(fn);
+    },
+  };
+  doc.activeElement = doc.body;
+  try {
+    g.document = doc;
+    g.window = { addEventListener() {} };
+    g.HTMLButtonElement = Button;
+    g.location = { search: '', href: '' };
+    g.setInterval = () => 0;
+    browser.storage.onChanged = {
+      addListener(fn: typeof storageListener) { storageListener = fn; },
+    };
+    await import('../src/newtab.js');
+    await new Promise(r => setTimeout(r, 30));
+    expect(focusCalls === 1, 'nie ustawiono jednorazowego fokusu');
+
+    doc.getElementById('search').value = 'nie kasuj tekstu';
+    doc.handlers.keydown.forEach((fn: (e: any) => void) => fn({}));
+    storageListener?.({ [KEYS.settings]: { newValue: {} } }, 'local');
+    await new Promise(r => setTimeout(r, 30));
+    expect(focusCalls === 1 &&
+      doc.getElementById('search').value === 'nie kasuj tekstu',
+      'odswiezenie ponowilo fokus albo skasowalo wpisany tekst');
+  } finally {
+    browser.storage.onChanged = oldChanged;
+    for (const [k, value] of Object.entries(old)) {
+      if (value === undefined) delete g[k];
+      else g[k] = value;
+    }
+  }
+});
+
 
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
