@@ -87,6 +87,93 @@
       <div id="profiles" class="list"></div>
     </div>
 
+    <section id="startpage-editor" class="card sp-editor" hidden aria-labelledby="sp-heading">
+      <div class="card-head">
+        <div>
+          <h2 id="sp-heading">Strona startowa: <span id="sp-profile-name"></span></h2>
+          <p id="sp-versions" class="muted small"></p>
+        </div>
+        <button type="button" id="sp-close">Zamknij edytor</button>
+      </div>
+      <p class="muted small">Sekcje i katalog wyszukiwarek są wspólne dla profilu.
+        Przypięte wyszukiwarki i wybór domyślnej pozostają lokalne w przeglądarce.
+        Usunięcie sekcji z tej listy nie usuwa zakładek.</p>
+      <p id="sp-message" class="notice" role="status" aria-live="polite" hidden></p>
+
+      <div id="sp-conflict" class="sp-conflict" role="region" aria-label="Konflikt wersji" hidden>
+        <p><strong id="sp-conflict-kind"></strong> Twój formularz i wybrany plik są zachowane.</p>
+        <details open>
+          <summary>Aktualna wersja na serwerze — porównaj z formularzem poniżej</summary>
+          <div id="sp-server-version" class="sp-server-version"></div>
+        </details>
+        <div class="actions top-gap">
+          <button type="button" id="sp-compare">Porównaj ponownie</button>
+          <button type="button" id="sp-rebase">Zachowaj formularz i użyj tej podstawy</button>
+          <button type="button" id="sp-load-server" class="danger">Wczytaj wersję serwera</button>
+        </div>
+        <p class="muted small">Wybór podstawy niczego nie wysyła.
+          Dopiero kolejny zapis zastąpi pokazaną wersję Twoimi danymi.</p>
+      </div>
+
+      <form id="sp-settings-form">
+        <fieldset id="sp-settings-fields" disabled>
+          <legend class="sp-legend">Ustawienia strony startowej</legend>
+          <div class="card-head">
+            <h3>Sekcje z folderów zakładek</h3>
+            <div class="actions">
+              <button type="button" id="sp-add-section">Dodaj sekcję</button>
+              <button type="button" id="sp-refresh-folders">Odśwież foldery</button>
+            </div>
+          </div>
+          <p class="muted small">Wybierz folder z drzewa profilu. Jeden folder może być wskazany raz.
+            Brak własnej nazwy oznacza użycie nazwy folderu. Maksymalnie 64 sekcje.</p>
+          <div id="sp-sections"></div>
+
+          <div class="card-head sp-subheading">
+            <h3>Wyszukiwarki profilu</h3>
+            <div class="actions">
+              <button type="button" id="sp-add-engine">Dodaj wyszukiwarkę</button>
+              <button type="button" id="sp-builtins">Wczytaj wbudowane do edycji</button>
+            </div>
+          </div>
+          <p class="muted small">Adres HTTPS musi zawierać dokładnie jeden znacznik %s na zapytanie.
+            Sugestie Google działają dopiero po lokalnej zgodzie użytkownika.
+            Maksymalnie 32 wyszukiwarki.</p>
+          <p id="sp-default-engines" class="sp-default-engines small">Lista jest pusta:
+            strona startowa użyje katalogu wbudowanego — Google, Allegro, YouTube,
+            Mapy, Bing, DuckDuckGo i Wikipedia.</p>
+          <div id="sp-engines"></div>
+
+          <div class="actions top-gap">
+            <button type="submit" id="sp-save-settings" class="primary">Zapisz ustawienia</button>
+            <span id="sp-dirty" class="muted small" aria-live="polite"></span>
+          </div>
+        </fieldset>
+      </form>
+
+      <form id="sp-logo-form" class="sp-logo-form">
+        <fieldset id="sp-logo-fields" disabled>
+          <legend class="sp-legend">Logo profilu</legend>
+          <h3>Logo profilu</h3>
+          <p class="muted small">PNG, JPEG lub WebP do 512 KB, maksymalnie 4096 × 4096 pikseli.
+            Bez SVG. Zmianę logo zapisujesz osobno od ustawień.</p>
+          <div class="sp-logo-layout">
+            <img id="sp-logo-preview" class="sp-logo-preview" alt="Podgląd logo profilu" hidden>
+            <p id="sp-logo-state" class="muted small" aria-live="polite"></p>
+          </div>
+          <label>Wybierz plik logo
+            <input id="sp-logo-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp">
+          </label>
+          <div class="actions">
+            <button type="submit" id="sp-save-logo" class="primary">Zapisz logo</button>
+            <button type="button" id="sp-delete-logo" class="danger">Zaznacz do usunięcia</button>
+            <button type="button" id="sp-cancel-logo">Anuluj zmianę logo</button>
+            <button type="button" id="sp-refresh-logo">Odśwież podgląd</button>
+          </div>
+        </fieldset>
+      </form>
+    </section>
+
     <div class="card">
       <h2>Urządzenia</h2>
       <p class="muted small">Każda sparowana przeglądarka. Odwołanie dostępu działa natychmiast.</p>
