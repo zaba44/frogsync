@@ -159,3 +159,9 @@ Serwer nie może być źródłem aktualizacji: adres aktualizacji jest wpisany w
 - Wtyczka poniżej minimum nie synchronizuje po cichu: czerwona ikona i komunikat „Serwer wymaga nowszej wersji wtyczki — zaktualizuj”, z linkiem do właściwego kanału (XPI z GitHuba dla Firefoksa, sklep dla Chromium). Lokalna praca i kolejka zostają nietknięte.
 - Wtyczka zgodna, ale starsza od najnowszego wydania: dyskretna informacja „Dostępna nowa wersja”.
 - Panel przy każdym urządzeniu pokazuje wersję wtyczki i jej stan (aktualna / do aktualizacji / niezgodna), żeby od razu było widać, która przeglądarka została w tyle.
+
+### 7. Wyniki prób przeglądarek (dostawa 3.0)
+
+| Przeglądarka | Nowa karta | Strona startowa | Decyzja |
+|---|---|---|---|
+| Opera Air (2026-11-05) | Nie działa — Opera Air nie dopuszcza żadnego dodatku nowej karty | Działa po ręcznym ustawieniu adresu strony FrogSync | Bez obejść (przekierowanie przez `tabs` odrzucone). Kafelki: strona startowa + przycisk w okienku wtyczki. |
