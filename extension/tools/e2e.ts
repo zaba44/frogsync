@@ -622,6 +622,189 @@ await scenario('tresc: edycja po wyslaniu update zostaje lokalna zmiana do kolej
     'druga edycja nie wyszla zwyklym diffem');
 });
 
+await scenario('rodzic: lokalny ruch podczas pull zostaje przy zdalnej edycji tytulu', async () => {
+  const a = await newBrowser('Parent safe A', 'chromium', 'Ochrona rodzica', d => {
+    d.bookmarks.create({ parentId: tb(d), title: 'Cel ruchu' });
+    add(d, 'Przed ruchem', 'https://parent-safe.example/');
+  });
+  const b = await newBrowser('Parent safe B', 'gecko', 'Ochrona rodzica');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.update(b.bookmarks.find('Przed ruchem')!.id, { title: 'Tytul z B' });
+  await sync(b);
+
+  use(a);
+  const id = a.bookmarks.find('Przed ruchem')!.id;
+  const target = a.bookmarks.find('Cel ruchu')!.id;
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      a.bookmarks.move(id, { parentId: target });
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    expect(a.bookmarks.get(id)[0].parentId === target, 'pull cofnal lokalny ruch');
+    expect(a.bookmarks.get(id)[0].title === 'Tytul z B', 'zdalny tytul nie zostal zastosowany');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  expect(b.bookmarks.find('Tytul z B')?.parentId === b.bookmarks.find('Cel ruchu')?.id,
+    'lokalny ruch nie dotarl do B');
+});
+
+await scenario('usuniecie: lokalny brak podczas pull nie odtwarza niezmienionej tresci po ruchu serwera', async () => {
+  const a = await newBrowser('Delete safe A', 'chromium', 'Ochrona lokalnego usuniecia', d => {
+    d.bookmarks.create({ parentId: tb(d), title: 'Nowy rodzic' });
+    add(d, 'Usuwana lokalnie', 'https://delete-safe.example/');
+  });
+  const b = await newBrowser('Delete safe B', 'gecko', 'Ochrona lokalnego usuniecia');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.move(b.bookmarks.find('Usuwana lokalnie')!.id,
+    { parentId: b.bookmarks.find('Nowy rodzic')!.id });
+  await sync(b);
+
+  use(a);
+  const id = a.bookmarks.find('Usuwana lokalnie')!.id;
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      a.bookmarks.removeTree(id);
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    expect(!a.bookmarks.find('Usuwana lokalnie'), 'pull odtworzyl lokalnie usuniety wpis');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  expect(!b.bookmarks.find('Usuwana lokalnie'), 'lokalne usuniecie nie wyszlo na serwer');
+});
+
+await scenario('tombstone: edytowany potomek i jego folder przezywaja zdalne kasowanie', async () => {
+  const a = await newBrowser('Delete edited A', 'chromium', 'Edytowany potomek', d => {
+    const folder = d.bookmarks.create({ parentId: tb(d), title: 'Kasowany folder' });
+    add(d, 'Potomek przed edycja', 'https://edited-child.example/', folder.id);
+  });
+  const b = await newBrowser('Delete edited B', 'gecko', 'Edytowany potomek');
+  await converge(a, b);
+
+  const keptId = a.bookmarks.find('Potomek przed edycja')!.id;
+  use(b);
+  b.bookmarks.removeTree(b.bookmarks.find('Kasowany folder')!.id);
+  await sync(b);
+
+  use(a);
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      a.bookmarks.update(keptId, { title: 'Edytowany tuz przed tombstone' });
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    expect(a.bookmarks.find('Edytowany tuz przed tombstone')?.id === keptId,
+      'zdalne kasowanie usunelo lokalna edycje');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  expect(a.bookmarks.find('Edytowany tuz przed tombstone')?.id === keptId, 'odtworzenie zmienilo lokalne ID');
+  expect(b.bookmarks.find('Edytowany tuz przed tombstone'), 'zachowana edycja nie dotarla do B');
+  expect(b.bookmarks.findAll(n => n.url === 'https://edited-child.example/').length === 1,
+    'odtworzenie potomka utworzylo duplikat');
+});
+
+await scenario('konflikt kasowania uzgadnia poddrzewo bez cofania niezaleglej lokalnej edycji', async () => {
+  const a = await newBrowser('Scoped A', 'chromium', 'Zakres odtworzenia', d => {
+    const folder = d.bookmarks.create({ parentId: tb(d), title: 'Folder konfliktu' });
+    add(d, 'Stary potomek', 'https://scoped.example/child', folder.id);
+    add(d, 'Niezalezna baza', 'https://scoped.example/other');
+  });
+  const b = await newBrowser('Scoped B', 'gecko', 'Zakres odtworzenia');
+  await converge(a, b);
+
+  use(b);
+  add(b, 'Nowy potomek z B', 'https://scoped.example/new', b.bookmarks.find('Folder konfliktu')!.id);
+  await sync(b);
+
+  use(a);
+  const independent = a.bookmarks.find('Niezalezna baza')!.id;
+  a.bookmarks.removeTree(a.bookmarks.find('Folder konfliktu')!.id);
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.endsWith('/api/v1/ops')) {
+      injected = true;
+      a.bookmarks.update(independent, { title: 'Niezalezna pozniejsza edycja' });
+    }
+    return response;
+  };
+  try {
+    await sync(a);
+    expect(a.bookmarks.find('Nowy potomek z B'), 'nie odtworzono zakresu konfliktu');
+    expect(a.bookmarks.get(independent)[0].title === 'Niezalezna pozniejsza edycja',
+      'konflikt poddrzewa cofnal niezalezna edycje');
+  } finally { globalThis.fetch = realFetch; }
+
+  await converge(a, b);
+  expect(b.bookmarks.find('Niezalezna pozniejsza edycja'), 'niezalezna edycja nie dotarla');
+  expect(a.bookmarks.findAll(n => n.url === 'https://scoped.example/new').length === 1,
+    'zakres odtworzono z duplikatem');
+});
+
+await scenario('konflikt: przywrocenie zapisanej tresci jest trwale i idempotentne', async () => {
+  const engine = await import('../src/engine.js');
+  const { conflictId } = await import('../src/conflict-id.js');
+  const a = await newBrowser('Recover A', 'chromium', 'Odzyskanie konfliktu', d => {
+    add(d, 'Tytul bazowy', 'https://recover-conflict.example/');
+  });
+  const b = await newBrowser('Recover B', 'gecko', 'Odzyskanie konfliktu');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.update(b.bookmarks.find('Tytul bazowy')!.id, { title: 'Wygral serwer' });
+  await sync(b);
+  use(a);
+  a.bookmarks.update(a.bookmarks.find('Tytul bazowy')!.id, { title: 'Moja odrzucona wersja' });
+  await converge(a, b);
+
+  use(a);
+  const note = (await conflictNotes()).find(item => item.rejectedContent?.fields.some(field =>
+    field.local === 'Moja odrzucona wersja'));
+  expect(note, 'brak zapisanej wersji po odrzuconej operacji');
+  const id = conflictId(note);
+  const result = await engine.restoreConflict(id);
+  expect(result.connection === 'ok' && !result.lastError, 'odzyskanie nie powiodlo sie');
+  await converge(a, b);
+  expect(b.bookmarks.find('Moja odrzucona wersja'), 'odzyskana tresc nie dotarla do B');
+
+  use(a);
+  const session = await getLocal<any>(KEYS.server, null);
+  const before = (await api.hello(session)).head;
+  await engine.restoreConflict(id);
+  expect((await api.hello(session)).head === before, 'drugie klikniecie wykonalo druga operacje');
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

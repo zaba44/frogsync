@@ -5,6 +5,7 @@ import * as api from './api.js';
 import {
   syncOnce, loadStatus, pairWith, unpair, confirmDeletions, conflictNotes, clearConflicts,
   previewRestore, runRestore, listRestorePoints, previewUndo, undoToPoint, exportPointHtml,
+  restoreConflict,
 } from './engine.js';
 import { loadFilterConfig, saveFilterConfig, type FilterConfig } from './filters.js';
 import { detectBrowser } from './identity.js';
@@ -140,6 +141,9 @@ async function handle(message: Message): Promise<unknown> {
 
     case 'CLEAR_CONFLICTS':
       return clearConflicts();
+
+    case 'RESTORE_CONFLICT':
+      return withBadge(await restoreConflict(message.id));
 
     case 'GET_SETTINGS':
       return settings();

@@ -1,5 +1,6 @@
 import { wx } from './wx.js';
 import { UPDATE_URL } from './extension-version.js';
+import { conflictId } from './conflict-id.js';
 import type { ConflictNote, ConnectionState, Message, ServerSession, SyncStatus } from './types.js';
 
 // Popup tylko pokazuje stan i zleca — cala praca dzieje sie w tle.
@@ -103,6 +104,40 @@ function render(status: SyncStatus, server: ServerSession | null, conflicts: Con
     outcome.className = 'muted';
     outcome.textContent = c.outcome;
     body.append(title, outcome);
+
+    const canRestore = c.rejectedContent || c.rejectedPlacement || c.rejectedDeletion;
+    if (canRestore && !c.restoredAt) {
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.textContent = 'Przywróć moją wersję';
+      restore.addEventListener('click', async () => {
+        if (c.rejectedDeletion && !confirm('Ponowić zapisane usunięcie? Serwer ponownie sprawdzi konflikty.')) return;
+        restore.disabled = true;
+        try {
+          const reply = await send<SyncStatus & { error?: string }>({
+            type: 'RESTORE_CONFLICT', id: conflictId(c),
+          });
+          if (reply.error) throw new Error(reply.error);
+          await refresh();
+        } catch (err) {
+          outcome.textContent = err instanceof Error ? err.message : String(err);
+          restore.disabled = false;
+        }
+      });
+      body.append(restore);
+    } else if (c.restoredAt) {
+      const restored = document.createElement('div');
+      restored.className = 'muted';
+      restored.textContent = 'Zapisano operację odzyskania.';
+      body.append(restored);
+    }
+    if (c.restorePointId) {
+      const point = document.createElement('div');
+      point.className = 'muted';
+      point.textContent = 'Kopię znajdziesz w Ustawieniach → Punkty przywracania.';
+      body.append(point);
+    }
+
     row.append(body);
     list.append(row);
   }

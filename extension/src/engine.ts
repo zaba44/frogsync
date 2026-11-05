@@ -1,6 +1,7 @@
 import { diff, type KnownNode, type LocalNode, type Mapping, type PlannedOp } from './core/diff.js';
 import { planReorder } from './core/reorder.js';
 import { mergeContent } from './core/merge-content.js';
+import { conflictId } from './conflict-id.js';
 import { planBootstrap } from './core/bootstrap.js';
 import * as api from './api.js';
 import { getLocal, setLocal, KEYS } from './storage.js';
@@ -85,6 +86,10 @@ interface State {
   /** Usuniecia z serwera, ktorych jeszcze nie wykonano lokalnie (hamulec albo blad). */
   pendingDeletes: string[];
   approvedDeletes: string[];
+  /** Korzenie odrzuconych usuniec; ponownie odczytujemy tylko ich zakres. */
+  subtreeRefresh: string[];
+  /** Brak lokalnego wpisu wynika z odrzuconego usuniecia, nie z nowej edycji. */
+  restoreMissing: string[];
   bootstrap: { mode: 'replace' | 'merge'; startedAt: number; pointId?: string } | null;
 }
 
@@ -93,6 +98,7 @@ const EMPTY_STATE = {
   conflicts: [], brake: {}, requireFull: false, reapply: [], attempts: {}, pendingFolders: [],
   pendingDeletes: [], approvedDeletes: [], bootstrap: null,
   applyBases: {}, authoritativeApply: [],
+  subtreeRefresh: [], restoreMissing: [],
 };
 
 async function loadState(): Promise<State | null> {
@@ -329,6 +335,83 @@ export async function conflictNotes(): Promise<ConflictNote[]> {
   return (await getLocal<Partial<State>>('engineState', {})).conflicts ?? [];
 }
 
+export async function restoreConflict(id: string): Promise<SyncStatus> {
+  return exclusive(MAIN_LOCK, async () => {
+    await noRestoreInProgress();
+    const s = await loadState();
+    if (!s) throw new Error('Najpierw połącz przeglądarkę z serwerem.');
+    const note = s.conflicts.find(item => conflictId(item) === id);
+    if (!note) throw new Error('Konflikt nie jest już dostępny.');
+    if (note.restoredAt) return syncInner();
+    if (!idle(s) || s.pendingDeletes.length) {
+      throw new Error('Najpierw dokończ synchronizację, a potem ponów odzyskanie.');
+    }
+
+    const recovery = note.rejectedContent ?? note.rejectedPlacement ?? note.rejectedDeletion;
+    if (!recovery) throw new Error('Ten konflikt nie zawiera zapisanej operacji.');
+    if (recovery.generation !== s.session.generation) {
+      throw new Error('Konflikt pochodzi sprzed odtworzenia serwera. Skorzystaj z punktu przywracania.');
+    }
+
+    const info = await api.hello(s.session);
+    if (info.generation !== s.session.generation) {
+      throw new Error('Serwer zmienił generację. Najpierw zsynchronizuj stan i sprawdź punkty przywracania.');
+    }
+    const { nodes } = await fetchAll(s, 0);
+    const node = nodes.get(recovery.nodeId);
+    if (!node || node.kind === 'root') {
+      throw new Error('Wpis nie jest już dostępny na serwerze. Skorzystaj z punktu przywracania.');
+    }
+
+    const ops: PlannedOp[] = [];
+    if (note.rejectedContent) {
+      const op: PlannedOp = {
+        clientOpId: crypto.randomUUID(), type: 'update', nodeId: node.id,
+        baseVersion: node.version, force: node.deleted,
+      };
+      for (const field of note.rejectedContent.fields) {
+        if (field.field === 'title' && node.kind !== 'separator') op.title = field.local ?? '';
+        if (field.field === 'url' && node.kind === 'bookmark') op.url = field.local ?? '';
+      }
+      ops.push(op);
+    } else if (note.rejectedPlacement) {
+      const place = note.rejectedPlacement;
+      const parent = nodes.get(place.parentId);
+      if (!parent || parent.deleted || !['folder', 'root'].includes(parent.kind)) {
+        throw new Error('Zapisany folder docelowy nie jest już dostępny.');
+      }
+      if (node.deleted) {
+        ops.push({
+          clientOpId: crypto.randomUUID(), type: 'update', nodeId: node.id,
+          baseVersion: node.version, force: true,
+        });
+      }
+      ops.push({
+        clientOpId: crypto.randomUUID(), type: 'move', nodeId: node.id,
+        parentId: place.parentId, afterId: place.afterId, beforeId: place.beforeId,
+        baseVersion: node.version,
+      });
+    } else {
+      ops.push({
+        clientOpId: crypto.randomUUID(), type: 'delete', nodeId: node.id,
+        baseVersion: node.version, baseSeq: s.cursor,
+      });
+    }
+
+    await checkpoint('undo', s);
+    s.outbox = ops;
+    note.restoredAt = Date.now();
+    // Lokalnie wpis ma przyjac odzyskana wartosc z serwera. Bez tego stara wartosc
+    // w przegladarce wygladalaby jak nowa edycja i wrocilaby na serwer.
+    delete s.applyBases[node.id];
+    addUnique(s.authoritativeApply, node.id);
+    // Zgoda i operacja sa trwale w jednym zapisie. Utrata odpowiedzi
+    // uruchomi idempotentne ponowienie zamiast drugiej operacji.
+    await saveState(s);
+    return syncInner();
+  });
+}
+
 export async function clearConflicts(): Promise<SyncStatus> {
   return exclusive(MAIN_LOCK, async () => {
     const s = await loadState();
@@ -525,6 +608,7 @@ function idle(s: State): boolean {
   // i w known, wiec diff nie widzi w nich zmian — a uzytkownik moze dalej pracowac.
   const deletesPending = s.pendingDeletes.length > 0 && !s.brake.remote;
   return s.outbox.length === 0 && s.reapply.length === 0 && s.pendingFolders.length === 0 &&
+         s.subtreeRefresh.length === 0 &&
          !deletesPending && !s.requireFull && !s.bootstrap;
 }
 
@@ -699,8 +783,11 @@ async function handleReset(s: State, generation: string): Promise<void> {
     at: point.at, reason: 'reset-checkpoint', title: 'Serwer odtworzono z kopii',
     outcome: `Stan lokalny i niewysłane operacje zachowano w punkcie przywracania z ${new Date(point.at).toLocaleString('pl-PL')}.`,
   });
+  s.conflicts[s.conflicts.length - 1].restorePointId = point.id;
   s.pendingDeletes = [];
   s.approvedDeletes = [];
+  s.subtreeRefresh = [];
+  s.restoreMissing = [];
   s.applyBases = {};
   s.authoritativeApply = [];
   s.reapply = [];
@@ -726,12 +813,41 @@ function rememberApplyBase(s: State, base: KnownNode, acknowledged?: PlannedOp):
     if (acknowledged.title !== undefined) expected.title = acknowledged.title;
     if (acknowledged.url !== undefined) expected.url = acknowledged.url;
   }
+  if (acknowledged?.type === 'move' && acknowledged.parentId) {
+    expected.parentId = acknowledged.parentId;
+  }
   s.applyBases[base.id] = expected;
 }
 
 function handleResult(s: State, op: PlannedOp, r: OpResult, followUps: PlannedOp[]): void {
   const titleOf = () => r.node?.title || op.title || s.known[op.nodeId]?.title || '(bez nazwy)';
-  const note = (reason: string, outcome: string) => s.conflicts.push({ at: Date.now(), reason, title: titleOf(), outcome });
+  const note = (reason: string, outcome: string) => {
+    const entry: ConflictNote = { at: Date.now(), reason, title: titleOf(), outcome };
+    if (r.node && ['title-changed', 'url-changed'].includes(reason)) {
+      const fields: NonNullable<ConflictNote['rejectedContent']>['fields'] = [];
+      const base = s.applyBases[op.nodeId] ?? s.known[op.nodeId];
+      if (op.title !== undefined && op.title !== r.node.title) {
+        fields.push({ field: 'title', base: base?.title ?? null, local: op.title, remote: r.node.title });
+      }
+      if (op.url !== undefined && op.url !== r.node.url) {
+        fields.push({ field: 'url', base: base?.url ?? null, local: op.url, remote: r.node.url });
+      }
+      if (fields.length) entry.rejectedContent = {
+        nodeId: op.nodeId, generation: s.session.generation,
+        remoteVersion: r.node.version, fields,
+      };
+    }
+    if (reason === 'moved-elsewhere' && op.parentId) {
+      entry.rejectedPlacement = {
+        nodeId: op.nodeId, generation: s.session.generation,
+        parentId: op.parentId, afterId: op.afterId ?? null, beforeId: op.beforeId ?? null,
+      };
+    }
+    if (op.type === 'delete' && ['edited-since', 'subtree-changed'].includes(reason)) {
+      entry.rejectedDeletion = { nodeId: op.nodeId, generation: s.session.generation };
+    }
+    s.conflicts.push(entry);
+  };
   const retry = (patch: Partial<PlannedOp>) => followUps.push({ ...op, ...patch, clientOpId: crypto.randomUUID() });
 
   if (r.status === 'applied') {
@@ -787,8 +903,8 @@ function handleResult(s: State, op: PlannedOp, r: OpResult, followUps: PlannedOp
     case 'edited-since': case 'subtree-changed':
       // Nie kasujemy cudzej pracy: odpinamy poddrzewo, pelne pobranie przywroci je lokalnie
       note(r.reason, 'Usunięcie cofnięte: w innej przeglądarce zmieniono tę zawartość w międzyczasie.');
-      unlinkSubtree(s, op.nodeId);
-      s.requireFull = true;
+      // Nie odpinamy ocalalych potomkow ani nie przeladowujemy calego profilu.
+      addUnique(s.subtreeRefresh, op.nodeId);
       return;
     default:
       note(r.reason ?? 'conflict', 'Nierozpoznany konflikt — obowiązuje wersja z serwera.');
@@ -914,8 +1030,51 @@ async function fetchAll(s: State, after: number): Promise<{ nodes: Map<string, S
 
 async function pull(s: State, full: boolean): Promise<number> {
   let result;
+  const refreshed = [...s.subtreeRefresh];
   try {
     result = await fetchAll(s, full ? 0 : s.cursor);
+
+    if (!full && refreshed.length) {
+      // Stanowy dziennik nie ma endpointu poddrzewa. Pobieramy migawke,
+      // ale do stosowania wybieramy tylko zakres konfliktu i brakujacych rodzicow.
+      const snapshot = await fetchAll(s, 0);
+      const selected = new Set(refreshed);
+      const candidates = [
+        ...Object.values(s.known),
+        ...snapshot.nodes.values(),
+      ];
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const node of candidates) {
+          if (node.parentId && selected.has(node.parentId) && !selected.has(node.id)) {
+            selected.add(node.id);
+            grew = true;
+          }
+        }
+      }
+
+      for (const id of [...selected]) {
+        const seen = new Set<string>();
+        for (let parent = snapshot.nodes.get(id)?.parentId; parent && !seen.has(parent);) {
+          seen.add(parent);
+          if (!s.mapping.s2l[parent]) selected.add(parent);
+          parent = snapshot.nodes.get(parent)?.parentId;
+        }
+      }
+
+      for (const id of selected) {
+        const node = snapshot.nodes.get(id);
+        if (!node) continue;
+        result.nodes.set(id, node);
+        if (!node.deleted && node.kind !== 'root') {
+          addUnique(s.reapply, id);
+          addUnique(s.restoreMissing, id);
+        }
+      }
+      // Nie przesuwamy kursora do snapshot.head: pomineloby to niezalezne
+      // zmiany, ktore powstaly po pierwszym pobraniu.
+    }
   } catch (err) {
     if (!(err instanceof api.ResetRequired)) throw err;
     await handleReset(s, err.generation);
@@ -952,6 +1111,7 @@ async function pull(s: State, full: boolean): Promise<number> {
 
   s.cursor = head;
   s.requireFull = false;
+  s.subtreeRefresh = s.subtreeRefresh.filter(id => !refreshed.includes(id));
   return nodes.size;
 }
 
@@ -1023,6 +1183,7 @@ async function reconcile(s: State, previousEntries: [string, KnownNode | undefin
     s.reapply = s.reapply.filter(id => !done.has(id) && s.known[id]);
     for (const id of done) delete s.applyBases[id];
     s.authoritativeApply = s.authoritativeApply.filter(id => !done.has(id));
+    s.restoreMissing = s.restoreMissing.filter(id => !done.has(id));
 
     // Mapowanie musi byc trwale przed usunieciem intencji tworzenia.
     // Restart po tym zapisie odczyta mapowanie i rozliczy pozostala intencje.
@@ -1080,7 +1241,23 @@ async function applyOne(
   if (!local) {
     // Zmapowany, niezmieniony na serwerze, a lokalnie brak: uzytkownik wlasnie go usunal.
     // Usuniecie wyjdzie w nastepnym przebiegu — nie odtwarzamy go.
-    if (localId && !full && prev && k.version <= prev.version) return 'ok';
+    const base = s.applyBases[k.id] ?? prev;
+    if (localId && !full && base && !s.restoreMissing.includes(k.id)) {
+      const changedContent = base.title !== k.title || base.url !== k.url;
+      if (!changedContent) return 'ok';
+
+      // Lokalne usuniecie kontra zdalna edycja tresci: zachowujemy decyzje
+      // o usunieciu, zanim odtworzymy zmieniony wpis serwera.
+      if (!s.conflicts.some(note => note.rejectedDeletion?.nodeId === k.id &&
+        note.rejectedDeletion.generation === s.session.generation && !note.restoredAt)) {
+        s.conflicts.push({
+          at: Date.now(), reason: 'local-delete-conflict', title: k.title || '(bez nazwy)',
+          outcome: 'Odtworzono wpis zmieniony w innej przeglądarce. Twoją decyzję o usunięciu zachowano.',
+          rejectedDeletion: { nodeId: k.id, generation: s.session.generation },
+        });
+        await saveState(s);
+      }
+    }
 
     intents[k.id] = { parent: parentLocal, kind: k.kind, title: k.title, url: k.url, at: Date.now() };
     await saveIntents(intents);
@@ -1132,8 +1309,47 @@ async function applyOne(
 
     await updateLocal(local.id, merged.changes);
 
-    if (local.parentId !== parentLocal) {
-      await moveToFolderEnd(local.id, parentLocal);
+    // Tytul i URL mogly wymagac zapisu storage. Odczytujemy rodzica ponownie.
+    const current = await nodeFresh(local.id);
+    if (!current) return 'retry';
+    if (current.parentId !== parentLocal) {
+      const currentParent = current.parentId ? s.mapping.l2s[current.parentId] : undefined;
+      const localMoved = !!base && currentParent !== base.parentId;
+      const remoteMoved = !!base && k.parentId !== base.parentId;
+
+      if (!full && localMoved && !remoteMoved) {
+        // Lokalny ruch pozostaje do wyslania zwyklym diffem.
+        return 'ok';
+      }
+
+      if (!full && localMoved && remoteMoved && current.parentId) {
+        const siblings = await childIds(current.parentId);
+        const at = siblings.indexOf(current.id);
+        const mapped = (id: string | undefined) => id ? s.mapping.l2s[id] ?? null : null;
+        if (currentParent) {
+          const rejectedPlacement = {
+            nodeId: k.id, generation: s.session.generation, parentId: currentParent,
+            afterId: mapped(siblings[at - 1]), beforeId: mapped(siblings[at + 1]),
+          };
+          if (!s.conflicts.some(note =>
+            JSON.stringify(note.rejectedPlacement) === JSON.stringify(rejectedPlacement) && !note.restoredAt)) {
+            s.conflicts.push({
+              at: Date.now(), reason: 'parent-changed', title: current.title || '(bez nazwy)',
+              outcome: 'Wpis przeniesiono w obu przeglądarkach. Zastosowano miejsce z serwera; Twoje miejsce zachowano.',
+              rejectedPlacement,
+            });
+          }
+          await saveState(s);
+        } else {
+          // Niezmapowany rodzic jest nowym lokalnym folderem. Diff musi
+          // najpierw utworzyc ten folder; nie wyciagamy z niego wpisu.
+          return 'ok';
+        }
+      }
+
+      const checked = await nodeFresh(current.id);
+      if (!checked || checked.parentId !== current.parentId) return 'retry';
+      await moveToFolderEnd(current.id, parentLocal);
       addUnique(s.pendingFolders, k.parentId);
     }
     return 'ok';
@@ -1159,6 +1375,8 @@ async function nodeFresh(id: string): Promise<LocalNode | undefined> {
  * wersja wolala removeTree i zabierala je razem z folderem (znalezisko Codexa).
  */
 async function deleteLocally(s: State): Promise<void> {
+  if (s.pendingDeletes.length === 0) return;
+  await preserveEditedBeforeDelete(s);
   if (s.pendingDeletes.length === 0) return;
   const roots = await readRoots();
   const index = indexTree(roots);
@@ -1207,6 +1425,76 @@ async function deleteLocally(s: State): Promise<void> {
 // Pomocniki stanu
 // ============================================================
 
+async function preserveEditedBeforeDelete(s: State): Promise<void> {
+  const doomed = new Set(s.pendingDeletes);
+  const index = indexTree(await readRoots());
+  const keep = new Set<string>();
+  const filters = compileFilters(await loadFilterConfig());
+  const quarantine = new Set(await quarantineIds());
+
+  for (const sid of doomed) {
+    const local = index.get(s.mapping.s2l[sid]);
+    const base = s.applyBases[sid] ?? s.known[sid];
+    if (!local || !base) continue;
+
+    const parent = local.parentId ? s.mapping.l2s[local.parentId] : undefined;
+    const edited = local.title !== base.title ||
+      (local.kind === 'bookmark' && (local.url ?? null) !== base.url) ||
+      parent !== base.parentId;
+
+    const newChild = local.kind === 'folder' && (local.children ?? []).some(child =>
+      !s.mapping.l2s[child.id] && !quarantine.has(child.id) &&
+      !(child.kind === 'folder' && filters.isFolderExcluded(child.title, child.id)) &&
+      !(child.kind === 'bookmark' && filters.isUrlExcluded(child.url ?? '')));
+
+    if (edited || newChild) keep.add(sid);
+  }
+
+  // Przywrocenie potomka wymaga zywych przodkow. Zachowujemy ich GUID-y.
+  for (const sid of [...keep]) {
+    const seen = new Set<string>();
+    for (let parent = s.known[sid]?.parentId; parent && !seen.has(parent);
+      parent = s.known[parent]?.parentId) {
+      seen.add(parent);
+      if (doomed.has(parent)) keep.add(parent);
+    }
+  }
+  if (!keep.size) return;
+
+  await checkpoint('remote-delete', s);
+  const depth = (sid: string) => {
+    let value = 0;
+    const seen = new Set<string>();
+    for (let p = s.known[sid]?.parentId; p && !seen.has(p); p = s.known[p]?.parentId) {
+      seen.add(p);
+      value++;
+    }
+    return value;
+  };
+
+  const recovery: PlannedOp[] = [];
+  for (const sid of [...keep].sort((a, b) => depth(a) - depth(b))) {
+    const node = s.known[sid];
+    if (!node || node.kind === 'root') continue;
+    const local = index.get(s.mapping.s2l[sid]);
+    recovery.push({
+      clientOpId: crypto.randomUUID(), type: 'update', nodeId: sid,
+      baseVersion: node.version, force: true,
+      ...(node.kind !== 'separator' ? { title: local?.title ?? node.title } : {}),
+      ...(node.kind === 'bookmark' ? { url: local?.url ?? node.url ?? '' } : {}),
+    });
+  }
+
+  s.outbox.push(...recovery);
+  s.pendingDeletes = s.pendingDeletes.filter(id => !keep.has(id));
+  s.approvedDeletes = s.approvedDeletes.filter(id => !keep.has(id));
+  s.conflicts.push({
+    at: Date.now(), reason: 'edited-before-delete', title: `${keep.size} zachowanych wpisów`,
+    outcome: 'Nie usunięto lokalnie zmienionych wpisów ani potrzebnych im folderów. Zmiany zapisano do wysłania; powstał punkt przywracania.',
+  });
+  await saveState(s);
+}
+
 function toKnown(n: ServerNode): KnownNode {
   return { id: n.id, parentId: n.parentId, kind: n.kind, title: n.title, url: n.url, order: n.order, version: n.version };
 }
@@ -1227,6 +1515,8 @@ function forget(s: State, sid: string): void {
   delete s.attempts[sid];
   delete s.applyBases[sid];
   s.authoritativeApply = s.authoritativeApply.filter(id => id !== sid);
+  s.restoreMissing = s.restoreMissing.filter(id => id !== sid);
+  s.subtreeRefresh = s.subtreeRefresh.filter(id => id !== sid);
   s.reapply = s.reapply.filter(x => x !== sid);
   s.pendingDeletes = s.pendingDeletes.filter(x => x !== sid);
   s.approvedDeletes = s.approvedDeletes.filter(x => x !== sid);
@@ -1238,14 +1528,3 @@ function unlink(s: State, sid: string): void {
   delete s.mapping.s2l[sid];
 }
 
-function unlinkSubtree(s: State, sid: string): void {
-  const doomed = new Set([sid]);
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const k of Object.values(s.known)) {
-      if (k.parentId && doomed.has(k.parentId) && !doomed.has(k.id)) { doomed.add(k.id); grew = true; }
-    }
-  }
-  for (const id of doomed) { unlink(s, id); delete s.known[id]; }
-}

@@ -101,6 +101,19 @@ export interface RejectedContent {
   }[];
 }
 
+export interface RejectedPlacement {
+  nodeId: string;
+  generation: string;
+  parentId: string;
+  afterId: string | null;
+  beforeId: string | null;
+}
+
+export interface RejectedDeletion {
+  nodeId: string;
+  generation: string;
+}
+
 export interface ConflictNote {
   at: number;
   reason: string;
@@ -108,6 +121,11 @@ export interface ConflictNote {
   outcome: string;
   /** Odrzucona wartosc zostaje zapisana przed zmiana w przegladarce. */
   rejectedContent?: RejectedContent;
+  rejectedPlacement?: RejectedPlacement;
+  rejectedDeletion?: RejectedDeletion;
+  restorePointId?: string;
+  /** Operacja odzyskania zostala trwale dodana do kolejki. */
+  restoredAt?: number;
 }
 
 export type Message =
@@ -127,4 +145,5 @@ export type Message =
   | { type: 'LIST_RESTORE_POINTS' }
   | { type: 'PREVIEW_UNDO'; id: string }
   | { type: 'UNDO_TO_POINT'; id: string; summaryId: string }
+  | { type: 'RESTORE_CONFLICT'; id: string }
   | { type: 'EXPORT_POINT_HTML'; id: string };
