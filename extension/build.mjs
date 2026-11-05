@@ -177,7 +177,17 @@ function packAll() {
   // XPI to zwykly ZIP; Mozilla podpisuje go przy wysylce.
   pack(join(ROOT, 'build', 'firefox'), join(distDir, 'firefox-extension.xpi'));
 
-  for (const name of ['chrome-extension.zip', 'firefox-extension.xpi']) {
+  // Chrome Web Store odrzuca pole "key" i nadaje wtyczce wlasne ID,
+  // wiec paczka do sklepu to ta sama zawartosc bez klucza.
+  const storeDir = join(ROOT, 'build', 'chrome-store');
+  rmSync(storeDir, { recursive: true, force: true });
+  cpSync(join(ROOT, 'build', 'chrome'), storeDir, { recursive: true });
+  const storeManifest = JSON.parse(readFileSync(join(storeDir, 'manifest.json'), 'utf8'));
+  delete storeManifest.key;
+  writeFileSync(join(storeDir, 'manifest.json'), JSON.stringify(storeManifest, null, 2));
+  pack(storeDir, join(distDir, 'chrome-store.zip'));
+
+  for (const name of ['chrome-extension.zip', 'chrome-store.zip', 'firefox-extension.xpi']) {
     const file = join(distDir, name);
     const hash = createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16);
     console.log(`  ${name.padEnd(24)} ${(statSync(file).size / 1024).toFixed(0)} kB  sha256:${hash}`);
