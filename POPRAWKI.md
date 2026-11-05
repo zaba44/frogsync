@@ -48,3 +48,11 @@ Na razie bez ikony (przeglądarka pokazuje domyślną). Docelowa ikona żaby —
 
 Codex przejrzał silnik i zgłosił dziewięć problemów; wszystkie poprawione w wersji 0.2.0
 wtyczki, każdy ma scenariusz w `tools/e2e.ts`.
+
+## Strona startowa — do dostawy 3.3
+
+- **Dziennik zdarzeń:** zapis ustawień strony startowej w panelu nie pojawia się w dzienniku (sprawdzone 2026-11-05 na serwerze testowym). Logo ma wpisy.
+- **Ikony stron na kafelkach:** Chromium `_favicon` (uprawnienie `favicon`), Firefox zostaje przy literach.
+- **Import skrótów ze starego Homepage** (`start_konfiguracja.json`) do wskazanego folderu, z punktem przywracania.
+- **Edycja kafelków** na stronie (tytuł, adres, kolejność przeciąganiem) jako zwykła edycja zakładek.
+- **Nowe wyszukiwarki z katalogu profilu** nie są automatycznie przypinane — przypina się je w ustawieniach wtyczki. Rozważyć podpowiedź „W profilu są nowe wyszukiwarki”.

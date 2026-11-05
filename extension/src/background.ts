@@ -10,6 +10,7 @@ import {
 import { loadFilterConfig, saveFilterConfig, type FilterConfig } from './filters.js';
 import { detectBrowser } from './identity.js';
 import { registerOperaNewTab } from './opera-newtab.js';
+import { refreshStartPage, clearStartPage } from './startpage-cache.js';
 import { DEFAULT_SETTINGS, type Message, type Settings, type SyncStatus } from './types.js';
 
 // Alarm wznawia zapisane zadania po restarcie workera. Zdarzenia zakladek
@@ -42,7 +43,10 @@ async function withBadge(status: SyncStatus): Promise<SyncStatus> {
 }
 
 async function run(): Promise<SyncStatus> {
-  return withBadge(await syncOnce());
+  const status = await withBadge(await syncOnce());
+  // Po przebiegu: konfiguracja strony startowej (najwyzej co 5 min) i mapa folderow sekcji
+  if (status.connection === 'ok') await refreshStartPage();
+  return status;
 }
 
 async function paintBadge(status: SyncStatus): Promise<void> {
@@ -131,12 +135,15 @@ async function handle(message: Message): Promise<unknown> {
 
     case 'PAIR': {
       const browser = await detectBrowser();
-      return withBadge(await pairWith(message.url, message.code, `${browser.name} ${browser.version.split('.')[0]}`.trim(),
+      const paired = await withBadge(await pairWith(message.url, message.code, `${browser.name} ${browser.version.split('.')[0]}`.trim(),
         message.mode, message.expectContent));
+      if (paired.connection === 'ok') await refreshStartPage(true);
+      return paired;
     }
 
     case 'UNPAIR':
       await unpair();
+      await clearStartPage();
       return withBadge(await loadStatus());
 
     case 'CONFIRM_DELETIONS':

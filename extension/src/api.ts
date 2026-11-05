@@ -138,3 +138,44 @@ export function sendOps(session: ServerSession, ops: PlannedOp[]): Promise<OpsRe
 export function reportCursor(session: ServerSession, cursor: number): Promise<unknown> {
   return call(session.url, '/api/v1/cursor', { method: 'POST', token: session.token, body: JSON.stringify({ cursor }) });
 }
+
+// ---- strona startowa profilu (3.2) ----
+
+export interface StartPageSectionView { id: string; folderId: string; title: string | null; available: boolean; folderTitle: string | null }
+export interface StartPageEngineDef { id: string; name: string; url: string; color: string; suggest: 'google' | 'none' }
+export interface StartPageSnapshot {
+  profileId: string; generation: string; settingsVersion: number; logoVersion: number;
+  configuration: { version: number; sections: StartPageSectionView[]; engines: StartPageEngineDef[] };
+}
+
+/** Warunkowy GET: null przy 304 (bez zmian od podanego ETag). Bledy jak w call(). */
+async function conditional(session: ServerSession, path: string, etag?: string): Promise<{ response: Response } | null> {
+  const headers: Record<string, string> = { 'X-FrogSync-Version': extensionVersion(), Authorization: `Bearer ${session.token}` };
+  if (etag) headers['If-None-Match'] = etag;
+  let response: Response;
+  try {
+    response = await fetch(session.url.replace(/\/+$/, '') + path,
+      { headers, cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    throw new Offline(err instanceof Error ? err.message : String(err));
+  }
+  if (response.status === 304) return null;
+  if (response.status === 401) throw new Unauthorized('Token odrzucony');
+  return { response };
+}
+
+export async function startPage(session: ServerSession, etag?: string): Promise<{ etag: string; snapshot: StartPageSnapshot } | null> {
+  const r = await conditional(session, '/api/v1/startpage', etag);
+  if (!r) return null;
+  if (!r.response.ok) throw new ServerError(r.response.status, 'HTTP_' + r.response.status, `HTTP ${r.response.status}`);
+  return { etag: r.response.headers.get('ETag') ?? '', snapshot: await r.response.json() as StartPageSnapshot };
+}
+
+/** Logo profilu; 'none' gdy profil go nie ma (404), null przy 304. */
+export async function startPageLogo(session: ServerSession, etag?: string): Promise<{ etag: string; type: string; bytes: ArrayBuffer } | 'none' | null> {
+  const r = await conditional(session, '/api/v1/startpage/logo', etag);
+  if (!r) return null;
+  if (r.response.status === 404) return 'none';
+  if (!r.response.ok) throw new ServerError(r.response.status, 'HTTP_' + r.response.status, `HTTP ${r.response.status}`);
+  return { etag: r.response.headers.get('ETag') ?? '', type: r.response.headers.get('Content-Type') ?? 'image/png', bytes: await r.response.arrayBuffer() };
+}

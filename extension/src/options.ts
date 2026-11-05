@@ -2,7 +2,9 @@ import { wx, isGecko } from './wx.js';
 import { BUILTIN_RULES, type FilterConfig } from './filters.js';
 import { parseBookmarkHtml, type BookmarkHtmlSource } from './bookmark-html.js';
 import { isOpera } from './opera-newtab.js';
-import { BUILTIN_ENGINES, DEFAULT_ENGINE, GOOGLE_SUGGEST_ORIGIN, MAX_PINNED, engineById, normalizePinned } from './core/search.js';
+import { BUILTIN_ENGINES, DEFAULT_ENGINE, GOOGLE_SUGGEST_ORIGIN, MAX_PINNED, engineById, normalizePinned, type SearchEngine } from './core/search.js';
+import { cacheKey, STARTPAGE_CACHE, type StartPageCache } from './startpage-cache.js';
+import { KEYS } from './storage.js';
 import type { RestorePlan, RestoreTree } from './core/restore.js';
 import type { RestorePointSummary, RestoreReason } from './restore-points.js';
 import type { Message, ServerSession, Settings, SyncStatus } from './types.js';
@@ -455,6 +457,16 @@ async function refresh(): Promise<void> {
 // ============================================================
 
 let startSettings: Settings;
+/** Katalog wyszukiwarek: z profilu (cache), gdy ustawiony w panelu, inaczej wbudowany. */
+let catalog: SearchEngine[] = [...BUILTIN_ENGINES];
+
+async function loadCatalog(): Promise<void> {
+  const got = await wx.storage.local.get([KEYS.server, STARTPAGE_CACHE]);
+  const session = got[KEYS.server] as ServerSession | null | undefined;
+  const cache = got[STARTPAGE_CACHE] as StartPageCache | null | undefined;
+  const engines = session && cache && cache.key === cacheKey(session) ? cache.snapshot.configuration.engines : [];
+  catalog = engines.length > 0 ? engines : [...BUILTIN_ENGINES];
+}
 
 async function saveStart(patch: Partial<Settings>): Promise<void> {
   startSettings = { ...startSettings, ...patch };
@@ -465,14 +477,14 @@ async function saveStart(patch: Partial<Settings>): Promise<void> {
 function renderEngineList(): void {
   const list = $('engine-list');
   list.replaceChildren();
-  const pinned = normalizePinned(startSettings.pinnedEngines);
+  const pinned = normalizePinned(startSettings.pinnedEngines, catalog);
   $('pin-count').textContent = String(pinned.length);
   $('pin-max').textContent = String(MAX_PINNED);
 
   // Przypiete najpierw, w swojej kolejnosci; reszta katalogu pod nimi
-  const ordered = [...pinned, ...BUILTIN_ENGINES.map(e => e.id).filter(id => !pinned.includes(id))];
+  const ordered = [...pinned, ...catalog.map(e => e.id).filter(id => !pinned.includes(id))];
   for (const id of ordered) {
-    const engine = engineById(id)!;
+    const engine = engineById(id, catalog)!;
     const isPinned = pinned.includes(id);
     const row = document.createElement('div');
     row.className = 'list-item engine-row';
@@ -484,7 +496,7 @@ function renderEngineList(): void {
     box.title = box.disabled ? `Przypięto już ${MAX_PINNED} — odepnij inną wyszukiwarkę` : '';
     box.addEventListener('change', () => {
       const next = box.checked ? [...pinned, id] : pinned.filter(x => x !== id);
-      void saveStart({ pinnedEngines: normalizePinned(next) }).then(renderEngineList);
+      void saveStart({ pinnedEngines: normalizePinned(next, catalog) }).then(renderEngineList);
     });
 
     const swatch = document.createElement('span');
@@ -517,8 +529,9 @@ function renderEngineList(): void {
   }
 }
 
-function initStartPage(settings: Settings): void {
+async function initStartPage(settings: Settings): Promise<void> {
   startSettings = settings;
+  await loadCatalog();
 
   const startPage = $('start-page') as HTMLInputElement;
   startPage.checked = settings.startPage;
@@ -549,8 +562,8 @@ function initStartPage(settings: Settings): void {
   });
 
   const select = $('default-engine') as HTMLSelectElement;
-  for (const e of BUILTIN_ENGINES) select.append(new Option(e.name, e.id));
-  select.value = engineById(settings.defaultEngine) ? settings.defaultEngine : DEFAULT_ENGINE;
+  for (const e of catalog) select.append(new Option(e.name, e.id));
+  select.value = engineById(settings.defaultEngine, catalog) ? settings.defaultEngine : (engineById(DEFAULT_ENGINE, catalog) ? DEFAULT_ENGINE : catalog[0].id);
   select.addEventListener('change', () => void saveStart({ defaultEngine: select.value }));
 
   const enterAddress = $('enter-address') as HTMLInputElement;
@@ -585,7 +598,7 @@ async function init(): Promise<void> {
   const poll = $('poll') as HTMLInputElement;
   auto.checked = settings.autoSync;
   poll.value = String(settings.pollMinutes);
-  initStartPage(settings);
+  await initStartPage(settings);
 
   auto.addEventListener('change', () => {
     void send({ type: 'SAVE_SETTINGS', settings: { autoSync: auto.checked } })

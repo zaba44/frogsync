@@ -1137,6 +1137,60 @@ await scenario('kolejnosc: edycja po zapisie konfliktu nie zostaje nadpisana sta
   same(b.bookmarks.titles(tb(b)), latest, 'nowszy uklad po synchronizacji');
 });
 
+await scenario('strona startowa: konfiguracja profilu trafia do cache, offline zostaje, rozlaczenie czysci', async () => {
+  const sp = await import('../src/startpage-cache.js');
+  const storage = await import('../src/storage.js');
+  const a = await newBrowser('Start A', 'chromium', 'Strona startowa', d => {
+    use(d);
+    const f = d.bookmarks.create({ parentId: tb(d), title: 'Ulubione' });
+    add(d, 'Ulubiona', 'https://ulubiona.example/', f.id);
+  });
+  await converge(a);
+  use(a);
+  const localFolder = a.bookmarks.find('Ulubione')!.id;
+  const state = await getLocal<any>('engineState', null);
+  const folderId = state.mapping.l2s[localFolder];
+  expect(folderId, 'brak mapowania folderu');
+
+  const pid = await profile('Strona startowa');
+  const current = await admin(`profiles/${pid}/startpage`);
+  const put = await fetch(`${baseUrl}/admin/api/profiles/${pid}/startpage`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-FrogSync': '1', Cookie: cookie },
+    body: JSON.stringify({ settingsVersion: current.settingsVersion, generation: current.generation,
+      configuration: { version: 1, sections: [{ id: 's1', folderId, title: 'Moje' }],
+        engines: [{ id: 'ceneo', name: 'Ceneo', url: 'https://www.ceneo.pl/;szukaj-%s', color: '#ff7a00', suggest: 'none' }] } }),
+  });
+  expect(put.ok, `zapis konfiguracji w panelu: HTTP ${put.status}`);
+
+  await sp.refreshStartPage(true);
+  const cache = await getLocal<any>(sp.STARTPAGE_CACHE, null);
+  const map = await getLocal<Record<string, string>>(sp.STARTPAGE_MAP, {});
+  expect(cache?.snapshot.configuration.sections[0]?.title === 'Moje', 'sekcja nie trafila do cache');
+  expect(cache.snapshot.configuration.engines[0]?.id === 'ceneo', 'katalog wyszukiwarek profilu nie trafil do cache');
+  expect(map[folderId] === localFolder, 'mapa folderu sekcji nie wskazuje lokalnego folderu');
+  const etag = cache.etag;
+
+  // Bez zmian na serwerze: 304, cache zostaje, ETag ten sam
+  await sp.refreshStartPage(true);
+  expect((await getLocal<any>(sp.STARTPAGE_CACHE, null)).etag === etag, 'ETag zmienil sie bez zmiany konfiguracji');
+
+  // Offline: ostatnie poprawne dane zostaja
+  const session = await getLocal<any>(KEYS.server, null);
+  await storage.setLocal({ [KEYS.server]: { ...session, url: 'https://127.0.0.1:1' } });
+  await sp.refreshStartPage(true);
+  await storage.setLocal({ [KEYS.server]: session });
+  expect((await getLocal<any>(sp.STARTPAGE_CACHE, null))?.snapshot.configuration.sections.length === 1, 'offline skasowal cache');
+
+  // Inny profil (np. ponowne parowanie): stary cache nie pasuje do klucza
+  await storage.setLocal({ [KEYS.server]: { ...session, profile: { ...session.profile, id: 'inny' } } });
+  expect((await getLocal<any>(sp.STARTPAGE_CACHE, null)).key !== sp.cacheKey((await getLocal<any>(KEYS.server, null))),
+    'cache starego profilu pasuje do nowej sesji');
+  await storage.setLocal({ [KEYS.server]: session });
+
+  await sp.clearStartPage();
+  expect(!(await getLocal<any>(sp.STARTPAGE_CACHE, null)), 'rozlaczenie nie wyczyscilo cache');
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

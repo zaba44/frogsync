@@ -1,20 +1,21 @@
 import { wx, type WxBookmarkNode } from './wx.js';
 import { nativeRootId, resolveRoots } from './local.js';
 import { KEYS } from './storage.js';
-import { DEFAULT_SETTINGS, type Settings } from './types.js';
+import { DEFAULT_SETTINGS, type ServerSession, type Settings } from './types.js';
+import { cacheKey, STARTPAGE_CACHE, STARTPAGE_MAP, type StartPageCache } from './startpage-cache.js';
+import type { StartPageSectionView } from './api.js';
 import {
   asAddress, engineById, googleSuggestUrl, mergeSuggestions, normalizePinned, parseGoogleSuggest, searchUrl,
-  DEFAULT_ENGINE, type BookmarkHit, type SearchEngine, type Suggestion,
+  BUILTIN_ENGINES, DEFAULT_ENGINE, type BookmarkHit, type SearchEngine, type Suggestion,
 } from './core/search.js';
 
 // ============================================================
-// Strona nowej karty — dostawa 3.0 (proba przegladarek).
+// Strona nowej karty.
 //
 // Celowo bez silnika synchronizacji i bez wiadomosci do tla: worker MV3
 // moze spac, a karta ma sie pokazac natychmiast i offline. Czyta tylko
-// ustawienia z pamieci rozszerzenia i zakladki przez API przegladarki.
-// Na razie kafelki z paska zakladek; sekcje z wybranych folderow
-// i logo z serwera przychodza w dostawie 3.1.
+// ustawienia, cache konfiguracji profilu (sekcje, wyszukiwarki, logo)
+// i zakladki przez API przegladarki. Bez sekcji — kafelki paska zakladek.
 // ============================================================
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -41,6 +42,29 @@ function letterFor(title: string, url?: string): string {
 // ---- kafelki ----
 
 const trail: { id: string; title: string }[] = [];
+/** Skad zaczyna sie sciezka w okruszkach: pasek zakladek albo nazwa sekcji. */
+let trailRoot = 'Pasek zakładek';
+
+/** Konfiguracja profilu z cache — tylko gdy pasuje do biezacej sesji (serwer, profil, generacja). */
+let profile: { sections: StartPageSectionView[]; map: Record<string, string>; catalog: SearchEngine[] } | null = null;
+
+async function loadProfile(): Promise<void> {
+  const got = await wx.storage.local.get([KEYS.server, STARTPAGE_CACHE, STARTPAGE_MAP]);
+  const session = got[KEYS.server] as ServerSession | null | undefined;
+  const cache = got[STARTPAGE_CACHE] as StartPageCache | null | undefined;
+  if (!session || !cache || cache.key !== cacheKey(session)) { profile = null; return; }
+  const engines = cache.snapshot.configuration.engines
+    .filter(e => /^https:\/\//i.test(e.url) && e.url.split('%s').length === 2);
+  profile = {
+    sections: cache.snapshot.configuration.sections,
+    map: (got[STARTPAGE_MAP] as Record<string, string> | undefined) ?? {},
+    catalog: engines.length > 0 ? engines : [...BUILTIN_ENGINES],
+  };
+  // Logo z cache: tylko obrazek zapisany przez tlo jako data: (bez adresow z sieci)
+  if (cache.logo?.dataUrl.startsWith('data:image/')) ($('logo') as HTMLImageElement).src = cache.logo.dataUrl;
+}
+
+function catalog(): readonly SearchEngine[] { return profile?.catalog ?? BUILTIN_ENGINES; }
 
 function tile(node: WxBookmarkNode): HTMLElement {
   const isFolder = node.url === undefined;
@@ -69,17 +93,67 @@ function tile(node: WxBookmarkNode): HTMLElement {
   return el;
 }
 
+function playable(children: WxBookmarkNode[]): WxBookmarkNode[] {
+  // Separatory (Firefox) i wpisy bez adresu http(s) nie maja sensu jako kafelki
+  return children.filter(c => c.type !== 'separator' && (c.url === undefined || /^https?:/i.test(c.url)));
+}
+
+async function renderSections(): Promise<void> {
+  const host = $('sections');
+  const blocks: HTMLElement[] = [];
+  for (const section of profile!.sections) {
+    const title = section.title || section.folderTitle || '(bez nazwy)';
+    const block = document.createElement('section');
+    block.className = 'start-section';
+    const h = document.createElement('h2');
+    h.textContent = title;
+    block.append(h);
+    const localId = profile!.map[section.folderId];
+    let items: WxBookmarkNode[] | null = null;
+    if (section.available && localId) {
+      try { items = playable(await wx.bookmarks.getChildren(localId)); } catch { items = null; }
+    }
+    if (items && items.length > 0) {
+      const grid = document.createElement('div');
+      grid.className = 'tiles';
+      for (const node of items) {
+        const t = tile(node);
+        // Podfolder otwiera sie w miejscu, z okruszkami od nazwy sekcji
+        if (node.url === undefined) t.addEventListener('click', () => { trailRoot = title; }, { capture: true });
+        grid.append(t);
+      }
+      block.append(grid);
+    } else {
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = !section.available ? 'Folder tej sekcji usunięto — wskaż inny w panelu FrogSync.'
+        : !localId || !items ? 'Folder jeszcze się synchronizuje…' : 'Folder jest pusty.';
+      block.append(p);
+    }
+    blocks.push(block);
+  }
+  host.replaceChildren(...blocks);
+}
+
 async function render(): Promise<void> {
   await resolveRoots();
   const rootId = nativeRootId('root:toolbar')!;
   const current = trail.at(-1);
+  const sectionsMode = !current && !!profile && profile.sections.length > 0;
+  ($('sections') as HTMLElement).hidden = !sectionsMode;
+  ($('tiles') as HTMLElement).hidden = sectionsMode;
+  if (!current) trailRoot = 'Pasek zakładek';
+  if (sectionsMode) {
+    $('crumbs').replaceChildren();
+    ($('empty') as HTMLElement).hidden = true;
+    await renderSections();
+    return;
+  }
   let children: WxBookmarkNode[] = [];
   try { children = await wx.bookmarks.getChildren(current?.id ?? rootId); }
   catch { trail.length = 0; children = await wx.bookmarks.getChildren(rootId); }
 
-  // Separatory (Firefox) i wpisy bez adresu http(s) nie maja sensu jako kafelki
-  const items = children.filter(c => c.type !== 'separator' &&
-    (c.url === undefined || /^https?:/i.test(c.url)));
+  const items = playable(children);
 
   const crumbs = $('crumbs');
   crumbs.replaceChildren();
@@ -90,7 +164,7 @@ async function render(): Promise<void> {
     back.addEventListener('click', () => { trail.pop(); void render(); });
     const where = document.createElement('span');
     where.className = 'muted';
-    where.textContent = ['Pasek zakładek', ...trail.map(t => t.title)].join(' › ');
+    where.textContent = [trailRoot, ...trail.map(t => t.title)].join(' › ');
     crumbs.append(back, where);
   }
 
@@ -116,7 +190,15 @@ const input = () => $('search') as HTMLInputElement;
 const box = () => $('suggestions') as HTMLElement;
 
 function engine(id: string): SearchEngine {
-  return engineById(id) ?? engineById(DEFAULT_ENGINE)!;
+  const list = catalog();
+  return engineById(id, list) ?? engineById(DEFAULT_ENGINE, list) ?? list[0];
+}
+
+/** Przypiete z katalogu profilu; gdy zadne lokalne nie pasuje — pierwsze cztery z katalogu. */
+function pinned(): string[] {
+  const list = catalog();
+  const chosen = normalizePinned(settings.pinnedEngines, list);
+  return chosen.length > 0 ? chosen : list.slice(0, 4).map(e => e.id);
 }
 
 function go(url: string): void { location.href = url; }
@@ -215,7 +297,7 @@ function moveSelection(step: number): void {
 function renderEngines(): void {
   const bar = $('engines');
   bar.replaceChildren();
-  for (const id of normalizePinned(settings.pinnedEngines)) {
+  for (const id of pinned()) {
     const e = engine(id);
     const b = document.createElement('button');
     b.type = 'button';
@@ -259,6 +341,7 @@ function wireSearch(): void {
 void (async () => {
   const stored = (await wx.storage.local.get(KEYS.settings))[KEYS.settings] as Partial<Settings> | undefined;
   settings = { ...DEFAULT_SETTINGS, ...stored };
+  await loadProfile();
 
   // ?view=start — adres wklejony jako strona startowa przegladarki (albo przekierowanie
   // Opery): kafelki zawsze, niezaleznie od przelacznika nowej karty

@@ -10,7 +10,7 @@
 <body>
 <main class="start">
   <header class="start-head">
-    <img src="icons/icon128.png" alt="" class="start-logo">
+    <img src="icons/icon128.png" alt="" class="start-logo" id="logo">
     <form id="search-form" class="search" role="search" autocomplete="off">
       <input id="search" type="search" placeholder="Szukaj" aria-label="Szukaj"
         role="combobox" aria-autocomplete="list" aria-controls="suggestions" aria-expanded="false">
@@ -20,6 +20,7 @@
   </header>
 
   <nav id="crumbs" class="crumbs"></nav>
+  <div id="sections" class="sections" hidden></div>
   <section id="tiles" class="tiles" aria-label="Pasek zakładek"></section>
   <p id="empty" class="muted center" hidden>Pasek zakładek jest pusty.</p>
 </main>
