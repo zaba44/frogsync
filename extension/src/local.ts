@@ -17,11 +17,36 @@ const GECKO_ROOTS: Record<ServerRoot, string> = {
   'root:mobile':   'mobile______',
 };
 
+// Chrome, Edge i Opera numeruja korzenie 1, 2, 3 — ale Brave nie (np. 1, 368, 369).
+// Wartosci domyslne nadpisuje resolveRoots() odczytem z samej przegladarki.
 const CHROMIUM_ROOTS: Partial<Record<ServerRoot, string>> = {
   'root:toolbar':  '1',
   'root:unsorted': '2',   // "Inne zakladki"
   'root:mobile':   '3',
 };
+
+const CHROMIUM_FOLDER_TYPES: Record<string, ServerRoot> = {
+  'bookmarks-bar': 'root:toolbar', other: 'root:unsorted', mobile: 'root:mobile',
+};
+
+/**
+ * Odczytuje prawdziwe identyfikatory korzeni Chromium. Nowsze wersje podaja
+ * folderType; starsze — kolejnosc: pasek, inne, mobilne (bez zarzadzanych).
+ * Trzeba wywolac przed nativeRootId(). Bez pamieci podrecznej: to jedno tanie
+ * zapytanie, a profil przegladarki moze sie zmienic (np. przywrocenie z kopii).
+ */
+export async function resolveRoots(): Promise<void> {
+  if (isGecko()) return;
+  const roots = (await wx.bookmarks.getChildren('0'))
+    .filter(r => !r.unmodifiable) as (WxBookmarkNode & { folderType?: string })[];
+  const byType = roots.filter(r => r.folderType && CHROMIUM_FOLDER_TYPES[r.folderType]);
+  if (byType.length > 0) {
+    for (const r of byType) CHROMIUM_ROOTS[CHROMIUM_FOLDER_TYPES[r.folderType!]] = r.id;
+  } else {
+    const order: ServerRoot[] = ['root:toolbar', 'root:unsorted', 'root:mobile'];
+    roots.slice(0, 3).forEach((r, i) => { CHROMIUM_ROOTS[order[i]] = r.id; });
+  }
+}
 
 /** Nazwy korzeni do odtwarzania pochodzenia zakladek w kwarantannie. */
 export const ROOT_LABELS: Record<ServerRoot, string> = {
@@ -61,6 +86,7 @@ export async function ensureRootMapping(mapping: Mapping, needMenu: boolean): Pr
     changed = true;
   };
 
+  await resolveRoots();
   for (const root of SERVER_ROOTS) {
     const native = nativeRootId(root);
     if (native) link(root, native);

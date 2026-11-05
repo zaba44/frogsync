@@ -1,5 +1,5 @@
 import { wx, type WxBookmarkNode } from './wx.js';
-import { nativeRootId } from './local.js';
+import { nativeRootId, resolveRoots } from './local.js';
 import { KEYS } from './storage.js';
 import { DEFAULT_SETTINGS, type Settings } from './types.js';
 
@@ -66,6 +66,7 @@ function tile(node: WxBookmarkNode): HTMLElement {
 }
 
 async function render(): Promise<void> {
+  await resolveRoots();
   const rootId = nativeRootId('root:toolbar')!;
   const current = trail.at(-1);
   let children: WxBookmarkNode[] = [];

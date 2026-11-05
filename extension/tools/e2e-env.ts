@@ -1,7 +1,7 @@
-﻿// ============================================================
+// ============================================================
 // Atrapa srodowiska WebExtension dla testu end-to-end.
 //
-// MUSI byc zaimportowana PRZED kodem wtyczki â€” wx.ts odczytuje
+// MUSI byc zaimportowana PRZED kodem wtyczki — wx.ts odczytuje
 // globalThis.browser przy inicjalizacji modulu.
 //
 // Podmieniona jest wylacznie przegladarka. Silnik, klient HTTP i filtry to
@@ -31,7 +31,7 @@ export class SimulatedCrash extends Error {}
 class FakeBookmarks {
   private readonly nodes = new Map<string, Node>();
   private next = 100;
-  /** Ile kolejnych utworzen zakladek ma sie nie udac â€” symulacja chwilowego bledu przegladarki. */
+  /** Ile kolejnych utworzen zakladek ma sie nie udac — symulacja chwilowego bledu przegladarki. */
   failNextCreates = 0;
   /** Ile kolejnych przesuniec ma sie nie udac. */
   failNextMoves = 0;
@@ -45,7 +45,7 @@ class FakeBookmarks {
     if (this.crashAfter > 0) this.crashAfter--;
   }
 
-  /** Folder zarzadzany polityka (zakladki firmowe w Chromium) â€” tylko do odczytu. */
+  /** Folder zarzadzany polityka (zakladki firmowe w Chromium) — tylko do odczytu. */
   addManaged(title: string, urls: string[]) {
     const root = this.root();
     const folder: Node = { id: String(this.next++), parentId: root.id, title, type: 'folder', dateAdded: 0, unmodifiable: 'managed', children: [] };
@@ -59,12 +59,18 @@ class FakeBookmarks {
     return folder.id;
   }
 
-  constructor(readonly engine: Engine) {
+  /** Identyfikatory korzeni Chromium: Chrome/Edge/Opera 1-2-3, Brave np. 1-368-369. */
+  private readonly chromiumIds: [string, string, string];
+
+  constructor(readonly engine: Engine, options: { braveIds?: boolean } = {}) {
+    this.chromiumIds = options.braveIds ? ['1', '368', '369'] : ['1', '2', '3'];
+    if (options.braveIds) this.next = 1000;   // nowe wpisy nie moga trafic na 368/369
     const root: Node = { id: engine === 'gecko' ? 'root________' : '0', title: '', type: 'folder', dateAdded: 0, children: [] };
     this.nodes.set(root.id, root);
+    const [bar, other, mobile] = this.chromiumIds;
     const specials = engine === 'gecko'
-      ? [['menu________', 'Menu zakĹ‚adek'], ['toolbar_____', 'Pasek zakĹ‚adek'], ['unfiled_____', 'Inne zakĹ‚adki'], ['mobile______', 'ZakĹ‚adki z telefonu']]
-      : [['1', 'Pasek zakĹ‚adek'], ['2', 'Inne zakĹ‚adki'], ['3', 'ZakĹ‚adki na telefonie']];
+      ? [['menu________', 'Menu zakładek'], ['toolbar_____', 'Pasek zakładek'], ['unfiled_____', 'Inne zakładki'], ['mobile______', 'Zakładki z telefonu']]
+      : [[bar, 'Pasek zakładek'], [other, 'Inne zakładki'], [mobile, 'Zakładki na telefonie']];
     for (const [id, title] of specials) {
       const node: Node = { id, parentId: root.id, title, type: 'folder', dateAdded: 0, children: [] };
       this.nodes.set(id, node);
@@ -72,8 +78,8 @@ class FakeBookmarks {
     }
   }
 
-  get toolbar() { return this.engine === 'gecko' ? 'toolbar_____' : '1'; }
-  get other() { return this.engine === 'gecko' ? 'unfiled_____' : '2'; }
+  get toolbar() { return this.engine === 'gecko' ? 'toolbar_____' : this.chromiumIds[0]; }
+  get other() { return this.engine === 'gecko' ? 'unfiled_____' : this.chromiumIds[1]; }
 
   getTree(): Node[] { return [this.clone(this.root())]; }
   get(id: string): Node[] { const n = this.must(id); return [this.shallow(n)]; }
@@ -203,7 +209,7 @@ export class FakeDevice {
   readonly bookmarks: FakeBookmarks;
   readonly local = new FakeArea();
   readonly session = new FakeArea();
-  constructor(readonly name: string, readonly engine: Engine) { this.bookmarks = new FakeBookmarks(engine); }
+  constructor(readonly name: string, readonly engine: Engine, options: { braveIds?: boolean } = {}) { this.bookmarks = new FakeBookmarks(engine, options); }
 }
 
 let current = new FakeDevice('start', 'gecko');

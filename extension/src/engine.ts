@@ -9,7 +9,7 @@ import { exclusive, ifFree, MAIN_LOCK, APPLY_LOCK } from './locks.js';
 import { compileFilters, loadFilterConfig } from './filters.js';
 import {
   readRoots, indexTree, ensureRootMapping, createLocal, updateLocal, moveToFolderEnd, moveWithin,
-  removeLocal, childIds, children, moveTo, countBookmarks, exists, nativeRootId,
+  removeLocal, childIds, children, moveTo, countBookmarks, exists, nativeRootId, resolveRoots,
   Unrepresentable, SERVER_ROOTS, ROOT_LABELS,
 } from './local.js';
 import type { ConflictNote, OpResult, ServerNode, ServerSession, SyncStatus } from './types.js';
@@ -102,6 +102,7 @@ const EMPTY_STATE = {
 };
 
 async function loadState(): Promise<State | null> {
+  await resolveRoots();
   const session = await getLocal<ServerSession | null>(KEYS.server, null);
   if (!session) return null;
   const stored = await getLocal<Partial<State> | null>('engineState', null);
@@ -272,6 +273,7 @@ async function prepareRestore(tree: RestoreTree, s: State | null) {
 }
 
 async function restoreStateForPreview(): Promise<State | null> {
+  await resolveRoots();
   const session = await getLocal<ServerSession | null>(KEYS.server, null);
   const stored = await getLocal<Partial<State> | null>('engineState', null);
   if (session && !stored) throw new Error('Najpierw uruchom synchronizację po aktualizacji wtyczki.');

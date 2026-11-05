@@ -112,8 +112,9 @@ async function profile(name: string): Promise<string> {
 }
 
 async function newBrowser(name: string, engine: 'gecko' | 'chromium', profileName: string,
-  setup?: (d: FakeDevice) => void, mode: 'replace' | 'merge' = 'replace'): Promise<FakeDevice> {
-  const device = new FakeDevice(name, engine);
+  setup?: (d: FakeDevice) => void, mode: 'replace' | 'merge' = 'replace',
+  options: { braveIds?: boolean } = {}): Promise<FakeDevice> {
+  const device = new FakeDevice(name, engine, options);
   created.push(device);
   use(device);
   setup?.(device);
@@ -803,6 +804,29 @@ await scenario('konflikt: przywrocenie zapisanej tresci jest trwale i idempotent
   const before = (await api.hello(session)).head;
   await engine.restoreConflict(id);
   expect((await api.hello(session)).head === before, 'drugie klikniecie wykonalo druga operacje');
+});
+
+await scenario('Brave: korzenie o innych numerach (1, 368, 369) synchronizuja sie poprawnie', async () => {
+  // Brave numeruje "Inne zakladki" i "Zakladki na komorce" inaczej niz Chrome (2, 3)
+  const a = await newBrowser('Brave src', 'gecko', 'Brave', d => {
+    use(d);
+    add(d, 'Na pasku', 'https://brave-pasek.example/');
+    d.bookmarks.create({ parentId: d.bookmarks.other, title: 'W innych', url: 'https://brave-inne.example/' });
+  });
+  const b = await newBrowser('Brave', 'chromium', 'Brave', d => {
+    use(d);
+    add(d, 'Fabryczna Brave', 'https://brave.com/');
+  }, 'replace', { braveIds: true });
+  await converge(a, b);
+
+  expect(b.bookmarks.find('Na pasku')?.parentId === '1', 'pasek nie dotarl do Brave');
+  expect(b.bookmarks.find('W innych')?.parentId === '368', '"Inne zakladki" nie trafily do korzenia 368');
+  expect(b.bookmarks.find(QUARANTINE_TITLE)?.parentId === '368', 'kwarantanna poza "Innymi zakladkami" Brave');
+  expect(!a.bookmarks.find('Fabryczna Brave'), 'zakladka fabryczna Brave wyszla na serwer');
+
+  use(b); add(b, 'Z Brave', 'https://z-brave.example/');
+  await converge(b, a);
+  expect(a.bookmarks.find('Z Brave'), 'zmiana z Brave nie dotarla');
 });
 
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
