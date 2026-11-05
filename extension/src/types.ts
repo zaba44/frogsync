@@ -55,9 +55,25 @@ export interface Settings {
   pollMinutes: number;
   /** Kafelki FrogSync na nowej karcie; false = pusta karta. */
   startPage: boolean;
+  /** Opera: przekierowanie Speed Dialu nowej karty na strone FrogSync (wymaga zgody "tabs"). */
+  operaNewTab: boolean;
+  /** Podpowiedzi z zakladek w polu wyszukiwania. */
+  searchBookmarks: boolean;
+  /** Podpowiedzi Google — wpisywany tekst idzie do Google; wymaga zgody na suggestqueries.google.com. */
+  googleSuggest: boolean;
+  /** Enter na tekscie, ktory jest adresem, otwiera strone zamiast szukac. */
+  enterOpensAddress: boolean;
+  /** Przyciski pod polem (najwyzej 6), w tej kolejnosci. */
+  pinnedEngines: string[];
+  /** Wyszukiwarka dla Enter. */
+  defaultEngine: string;
 }
 
-export const DEFAULT_SETTINGS: Settings = { autoSync: true, pollMinutes: 1, startPage: true };
+export const DEFAULT_SETTINGS: Settings = {
+  autoSync: true, pollMinutes: 1, startPage: true, operaNewTab: false,
+  searchBookmarks: false, googleSuggest: false, enterOpensAddress: true,
+  pinnedEngines: ['google', 'allegro', 'youtube', 'maps'], defaultEngine: 'google',
+};
 
 export type ConnectionState =
   | 'unpaired'

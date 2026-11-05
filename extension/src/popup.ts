@@ -157,7 +157,7 @@ $('sync-now').addEventListener('click', async (e) => {
 });
 
 $('open-options').addEventListener('click', () => void wx.runtime.openOptionsPage());
-$('open-start').addEventListener('click', () => { void wx.tabs.create({ url: wx.runtime.getURL('newtab.html') }); window.close(); });
+$('open-start').addEventListener('click', () => { void wx.tabs.create({ url: wx.runtime.getURL('newtab.html?view=start') }); window.close(); });
 $('clear-conflicts').addEventListener('click', async () => { await send({ type: 'CLEAR_CONFLICTS' }); await refresh(); });
 
 void refresh();

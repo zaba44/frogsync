@@ -12,9 +12,11 @@
   <header class="start-head">
     <img src="icons/icon128.png" alt="" class="start-logo">
     <form id="search-form" class="search" role="search" autocomplete="off">
-      <input id="search" type="search" placeholder="Szukaj w zakładkach lub w sieci" aria-label="Szukaj">
-      <div id="suggestions" class="suggestions" hidden></div>
+      <input id="search" type="search" placeholder="Szukaj" aria-label="Szukaj"
+        role="combobox" aria-autocomplete="list" aria-controls="suggestions" aria-expanded="false">
+      <div id="suggestions" class="suggestions" role="listbox" hidden></div>
     </form>
+    <div id="engines" class="engines" hidden></div>
   </header>
 
   <nav id="crumbs" class="crumbs"></nav>

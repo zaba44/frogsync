@@ -99,11 +99,53 @@
     </div>
   </dialog>
 
-  <div class="card">
+  <div class="card" id="start-card">
     <h2>Strona startowa</h2>
+
+    <h3>Nowa karta</h3>
     <label class="check"><input type="checkbox" id="start-page">
-      <span>Kafelki FrogSync na nowej karcie
-        <span class="desc">Wyłączone: nowa karta jest pusta. Stronę z kafelkami otworzysz też przyciskiem w okienku wtyczki.</span></span></label>
+      <span>Pokaż FrogSync na nowej karcie
+        <span class="desc">Wyłączone: nowa karta jest pusta — przeglądarka nie pozwala wtyczce oddać jej z powrotem.</span></span></label>
+    <div id="opera-box" hidden>
+      <label class="check"><input type="checkbox" id="opera-newtab">
+        <span>Przejmuj nową kartę w Operze
+          <span class="desc">Opera nie pozwala podmienić Speed Dialu wprost — FrogSync przestawia nową kartę na swoją stronę.
+          Wymaga zgody na odczyt adresów kart (przeglądarka nazywa to dostępem do historii). Wyłączenie przywraca Speed Dial i cofa zgodę.
+          Speed Dial może na chwilę mignąć, a po Ctrl+T kursor trafia do wyszukiwarki FrogSync.</span></span></label>
+    </div>
+
+    <h3>Przy uruchomieniu przeglądarki</h3>
+    <div class="muted">O tym, co otwiera się przy starcie, decyduje przeglądarka. Wklej ten adres w jej ustawieniach jako stronę startową — pokazuje kafelki zawsze, niezależnie od ustawienia nowej karty.</div>
+    <div class="row-inline">
+      <input type="text" id="start-url" readonly class="mono">
+      <button type="button" id="copy-start-url">Kopiuj adres</button>
+    </div>
+    <details class="desc">
+      <summary>Gdzie to ustawić</summary>
+      <ul>
+        <li><b>Chrome, Brave:</b> Ustawienia → Przy uruchomieniu → Otwórz konkretną stronę → Dodaj nową stronę.</li>
+        <li><b>Edge:</b> Ustawienia → Start, strona główna i nowe karty → Po uruchomieniu Microsoft Edge → Otwórz te strony.</li>
+        <li><b>Opera:</b> Ustawienia → Przy uruchomieniu → Otwórz określoną stronę lub zestaw stron.</li>
+        <li><b>Vivaldi:</b> Ustawienia → Ogólne → Strona startowa → Konkretna strona.</li>
+        <li><b>Firefox:</b> Ustawienia → Strona startowa → Strona startowa i nowe okna → Własne adresy.</li>
+      </ul>
+    </details>
+
+    <h3>Wyszukiwanie</h3>
+    <label class="field"><span>Wyszukiwarka dla klawisza Enter</span><select id="default-engine"></select></label>
+    <label class="check"><input type="checkbox" id="enter-address">
+      <span>Enter na adresie otwiera stronę
+        <span class="desc">Np. „onet.pl” otwiera stronę zamiast ją wyszukiwać.</span></span></label>
+    <label class="check"><input type="checkbox" id="search-bookmarks">
+      <span>Podpowiadaj z moich zakładek
+        <span class="desc">Do trzech pasujących zakładek nad podpowiedziami. Działa offline.</span></span></label>
+    <label class="check"><input type="checkbox" id="google-suggest">
+      <span>Podpowiedzi Google
+        <span class="desc">Wpisywany tekst jest wysyłany do Google (bez ciasteczek i bez danych FrogSync), żeby pobrać podpowiedzi. Wymaga zgody na połączenie z suggestqueries.google.com.</span></span></label>
+
+    <h3>Przyciski wyszukiwarek</h3>
+    <div class="muted">Przypięte wyszukiwarki pojawiają się jako przyciski pod polem wyszukiwania. Najwyżej <span id="pin-max"></span>; przypięto <span id="pin-count"></span>.</div>
+    <div id="engine-list" class="list"></div>
   </div>
 
   <div class="card">

@@ -829,6 +829,58 @@ await scenario('Brave: korzenie o innych numerach (1, 368, 369) synchronizuja si
   expect(a.bookmarks.find('Z Brave'), 'zmiana z Brave nie dotarla');
 });
 
+await scenario('strona startowa: wyszukiwarki, adresy i podpowiedzi (logika)', async () => {
+  const s = await import('../src/core/search.js');
+  same(s.normalizePinned(['google', 'google', 'nieznana', 'allegro', 'youtube', 'maps', 'bing', 'ddg', 'wikipedia']),
+    ['google', 'allegro', 'youtube', 'maps', 'bing', 'ddg'], 'limit 6 przypietych, bez powtorzen i nieznanych');
+  expect(s.searchUrl(s.engineById('allegro')!, ' buty zimowe ') === 'https://allegro.pl/listing?string=buty%20zimowe', 'zly adres Allegro');
+  const cases: [string, string | null][] = [
+    ['onet.pl', 'https://onet.pl/'], ['https://x.pl/a?b=1', 'https://x.pl/a?b=1'], ['192.168.144.66:18443', 'https://192.168.144.66:18443/'],
+    ['localhost:8080', 'https://localhost:8080/'], ['javascript:alert(1)', null], ['data:text/html,x', null],
+    ['buty zimowe', null], ['pogoda', null], ['3.5', null], ['file:///c:/x', null],
+  ];
+  for (const [text, want] of cases) expect(s.asAddress(text) === want, `asAddress(${text}) = ${s.asAddress(text)}, oczekiwano ${want}`);
+  same(s.parseGoogleSuggest(['pog', ['pogoda', 'pogoda jutro', 7, '']]), ['pogoda', 'pogoda jutro'], 'odczyt podpowiedzi Google');
+  same(s.parseGoogleSuggest({ zly: true }), [], 'zla odpowiedz Google');
+  const merged = s.mergeSuggestions('pogoda',
+    [1, 2, 3, 4].map(i => ({ title: `Z${i}`, url: `https://z${i}.pl/` })).concat([{ title: 'dup', url: 'https://z1.pl/' }]),
+    ['Pogoda', 'pogoda jutro', 'pogoda jutro', 'a', 'b', 'c', 'd', 'e', 'f']);
+  same(merged.map(m => m.kind === 'bookmark' ? m.title : m.text),
+    ['Z1', 'Z2', 'Z3', 'pogoda jutro', 'a', 'b', 'c', 'd', 'e'], 'najpierw 3 zakladki, potem 6 podpowiedzi bez powtorzen');
+});
+
+await scenario('Opera: nowa karta ze Speed Dialem przestawiona tylko gdy wolno', async () => {
+  const { onOperaTabCreated } = await import('../src/opera-newtab.js');
+  const storage = await import('../src/storage.js');
+  const d = new FakeDevice('Opera tabs', 'chromium');
+  use(d);
+  const b = (globalThis as any).browser;
+  const real = { update: b.tabs.update, query: b.tabs.query, contains: b.permissions.contains };
+  const updated: number[] = [];
+  let tabsInWindow = 2, granted = true;
+  b.tabs.update = async (id: number) => { updated.push(id); };
+  b.tabs.query = async () => Array.from({ length: tabsInWindow }, (_, i) => ({ id: i, windowId: 1, incognito: false }));
+  b.permissions.contains = async () => granted;
+  const tab = (id: number, url: string, incognito = false) => ({ id, windowId: 1, pendingUrl: url, incognito });
+  try {
+    await onOperaTabCreated(tab(1, 'chrome://startpageshared/'));
+    expect(updated.length === 0, 'przekierowano mimo wylaczonej opcji');
+    await storage.setLocal({ [KEYS.settings]: { operaNewTab: true } });
+    await onOperaTabCreated(tab(2, 'chrome://startpageshared/'));
+    expect(updated.join() === '2', 'nie przekierowano Speed Dialu');
+    await onOperaTabCreated(tab(2, 'chrome://startpageshared/'));
+    expect(updated.join() === '2', 'ta sama karta przekierowana drugi raz');
+    await onOperaTabCreated(tab(3, 'https://startpage.com/'));
+    await onOperaTabCreated(tab(4, 'chrome://startpageshared/', true));
+    tabsInWindow = 1; await onOperaTabCreated(tab(5, 'chrome://startpageshared/')); tabsInWindow = 2;
+    granted = false; await onOperaTabCreated(tab(6, 'chrome://startpageshared/'));
+    expect(updated.join() === '2', `przekierowano obca strone, okno prywatne, pierwsza karte albo bez zgody: ${updated}`);
+  } finally {
+    Object.assign(b.tabs, { update: real.update, query: real.query });
+    b.permissions.contains = real.contains;
+  }
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

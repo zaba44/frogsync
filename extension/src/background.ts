@@ -9,10 +9,13 @@ import {
 } from './engine.js';
 import { loadFilterConfig, saveFilterConfig, type FilterConfig } from './filters.js';
 import { detectBrowser } from './identity.js';
+import { registerOperaNewTab } from './opera-newtab.js';
 import { DEFAULT_SETTINGS, type Message, type Settings, type SyncStatus } from './types.js';
 
 // Alarm wznawia zapisane zadania po restarcie workera. Zdarzenia zakladek
 // tylko przyspieszaja odczyt drzewa, nie stanowia dziennika synchronizacji.
+
+registerOperaNewTab();
 
 const SYNC_ALARM = 'frogsync-sync';
 const DEBOUNCE_MS = 3000;

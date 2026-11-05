@@ -248,6 +248,6 @@ const listener = { addListener() {}, removeListener() {} };
   },
   alarms: { create() {}, get: async () => undefined, clear: async () => true, onAlarm: listener },
   action: { setIcon: noop, setTitle: noop, setBadgeText: noop, setBadgeBackgroundColor: noop },
-  tabs: { create: noop },
-  permissions: { contains: async () => true, request: async () => true },
+  tabs: { create: noop, update: noop, query: async () => [], onCreated: listener },
+  permissions: { contains: async () => true, request: async () => true, remove: async () => true },
 };

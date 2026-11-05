@@ -1,6 +1,8 @@
 import { wx, isGecko } from './wx.js';
 import { BUILTIN_RULES, type FilterConfig } from './filters.js';
 import { parseBookmarkHtml, type BookmarkHtmlSource } from './bookmark-html.js';
+import { isOpera } from './opera-newtab.js';
+import { BUILTIN_ENGINES, DEFAULT_ENGINE, GOOGLE_SUGGEST_ORIGIN, MAX_PINNED, engineById, normalizePinned } from './core/search.js';
 import type { RestorePlan, RestoreTree } from './core/restore.js';
 import type { RestorePointSummary, RestoreReason } from './restore-points.js';
 import type { Message, ServerSession, Settings, SyncStatus } from './types.js';
@@ -448,6 +450,133 @@ async function refresh(): Promise<void> {
   }
 }
 
+// ============================================================
+// Strona startowa
+// ============================================================
+
+let startSettings: Settings;
+
+async function saveStart(patch: Partial<Settings>): Promise<void> {
+  startSettings = { ...startSettings, ...patch };
+  try { await send({ type: 'SAVE_SETTINGS', settings: patch }); }
+  catch (err) { show(errorText(err)); }
+}
+
+function renderEngineList(): void {
+  const list = $('engine-list');
+  list.replaceChildren();
+  const pinned = normalizePinned(startSettings.pinnedEngines);
+  $('pin-count').textContent = String(pinned.length);
+  $('pin-max').textContent = String(MAX_PINNED);
+
+  // Przypiete najpierw, w swojej kolejnosci; reszta katalogu pod nimi
+  const ordered = [...pinned, ...BUILTIN_ENGINES.map(e => e.id).filter(id => !pinned.includes(id))];
+  for (const id of ordered) {
+    const engine = engineById(id)!;
+    const isPinned = pinned.includes(id);
+    const row = document.createElement('div');
+    row.className = 'list-item engine-row';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = isPinned;
+    box.disabled = !isPinned && pinned.length >= MAX_PINNED;
+    box.title = box.disabled ? `Przypięto już ${MAX_PINNED} — odepnij inną wyszukiwarkę` : '';
+    box.addEventListener('change', () => {
+      const next = box.checked ? [...pinned, id] : pinned.filter(x => x !== id);
+      void saveStart({ pinnedEngines: normalizePinned(next) }).then(renderEngineList);
+    });
+
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch';
+    swatch.style.background = engine.color;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = engine.name;
+    row.append(box, swatch, name);
+
+    if (isPinned) {
+      const at = pinned.indexOf(id);
+      const move = (step: number) => {
+        const next = [...pinned];
+        [next[at], next[at + step]] = [next[at + step], next[at]];
+        void saveStart({ pinnedEngines: next }).then(renderEngineList);
+      };
+      for (const [label, step, aria] of [['▲', -1, 'Wyżej'], ['▼', 1, 'Niżej']] as const) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'linkish';
+        b.textContent = label;
+        b.setAttribute('aria-label', `${aria}: ${engine.name}`);
+        b.disabled = at + step < 0 || at + step >= pinned.length;
+        b.addEventListener('click', () => move(step));
+        row.append(b);
+      }
+    }
+    list.append(row);
+  }
+}
+
+function initStartPage(settings: Settings): void {
+  startSettings = settings;
+
+  const startPage = $('start-page') as HTMLInputElement;
+  startPage.checked = settings.startPage;
+  startPage.addEventListener('change', () => void saveStart({ startPage: startPage.checked }));
+
+  // Opera: przelacznik tylko tam, z opcjonalna zgoda "tabs"
+  const operaBox = $('opera-box') as HTMLElement;
+  operaBox.hidden = !isOpera();
+  const opera = $('opera-newtab') as HTMLInputElement;
+  opera.checked = settings.operaNewTab;
+  opera.addEventListener('change', async () => {
+    if (opera.checked) {
+      // Zgoda musi wyjsc z klikniecia — inaczej przegladarka odrzuci prosbe bez okna
+      const granted = await wx.permissions.request({ permissions: ['tabs'] });
+      if (!granted) { opera.checked = false; show('Bez zgody na odczyt kart FrogSync nie rozpozna nowej karty Opery.'); return; }
+      await saveStart({ operaNewTab: true });
+    } else {
+      await saveStart({ operaNewTab: false });
+      try { await wx.permissions.remove({ permissions: ['tabs'] }); } catch { /* zgody moglo juz nie byc */ }
+    }
+  });
+
+  const startUrl = $('start-url') as HTMLInputElement;
+  startUrl.value = wx.runtime.getURL('newtab.html?view=start');
+  $('copy-start-url').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(startUrl.value); show('Adres skopiowany. Wklej go w ustawieniach przeglądarki jako stronę startową.', 'ok'); }
+    catch { startUrl.select(); show('Zaznaczyłem adres — skopiuj go klawiszami Ctrl+C.', 'info'); }
+  });
+
+  const select = $('default-engine') as HTMLSelectElement;
+  for (const e of BUILTIN_ENGINES) select.append(new Option(e.name, e.id));
+  select.value = engineById(settings.defaultEngine) ? settings.defaultEngine : DEFAULT_ENGINE;
+  select.addEventListener('change', () => void saveStart({ defaultEngine: select.value }));
+
+  const enterAddress = $('enter-address') as HTMLInputElement;
+  enterAddress.checked = settings.enterOpensAddress;
+  enterAddress.addEventListener('change', () => void saveStart({ enterOpensAddress: enterAddress.checked }));
+
+  const marks = $('search-bookmarks') as HTMLInputElement;
+  marks.checked = settings.searchBookmarks;
+  marks.addEventListener('change', () => void saveStart({ searchBookmarks: marks.checked }));
+
+  const google = $('google-suggest') as HTMLInputElement;
+  google.checked = settings.googleSuggest;
+  google.addEventListener('change', async () => {
+    if (google.checked) {
+      const granted = await wx.permissions.request({ origins: [GOOGLE_SUGGEST_ORIGIN] });
+      if (!granted) { google.checked = false; show('Bez zgody na połączenie z Google podpowiedzi nie zadziałają.'); return; }
+      await saveStart({ googleSuggest: true });
+    } else {
+      await saveStart({ googleSuggest: false });
+      try { await wx.permissions.remove({ origins: [GOOGLE_SUGGEST_ORIGIN] }); } catch { /* juz cofnieta */ }
+    }
+  });
+
+  renderEngineList();
+}
+
 async function init(): Promise<void> {
   $('version').textContent = `wersja ${wx.runtime.getManifest().version}`;
   await refreshPoints();
@@ -456,12 +585,7 @@ async function init(): Promise<void> {
   const poll = $('poll') as HTMLInputElement;
   auto.checked = settings.autoSync;
   poll.value = String(settings.pollMinutes);
-  const startPage = $('start-page') as HTMLInputElement;
-  startPage.checked = settings.startPage;
-  startPage.addEventListener('change', () => {
-    void send({ type: 'SAVE_SETTINGS', settings: { startPage: startPage.checked } })
-      .catch(err => show(errorText(err)));
-  });
+  initStartPage(settings);
 
   auto.addEventListener('change', () => {
     void send({ type: 'SAVE_SETTINGS', settings: { autoSync: auto.checked } })

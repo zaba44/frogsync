@@ -71,3 +71,23 @@ Synchronizacja zakładek przeglądarki z serwerem uruchomionym przez użytkownik
 ## Notatka dla recenzenta (Test instructions)
 
 FrogSync requires a self-hosted FrogSync server (open source, Docker image `ghcr.io/zaba44/frogsync-server`). Without a server the popup shows "Not connected" and the options page shows the pairing form. To test end-to-end: run `docker run -d --network host ghcr.io/zaba44/frogsync-server:v0.4.0`, open https://<host>:8443, follow the one-time setup code from the container log, create a profile and click "Pair browser" to get a 6-digit code, then enter the server address and code in the extension options. Restore-from-export (options page) works without a server.
+
+## Aktualizacja przy wersji ze stroną startową (0.6.0)
+
+Podmienić przy zgłoszeniu pierwszej wersji z nową kartą — nie w trakcie przeglądu 0.4.1.
+
+**Pojedynczy cel (nowy):**
+Zakładki zawsze pod ręką: synchronizacja zakładek między przeglądarkami przez własny serwer użytkownika i szybki dostęp do nich na stronie nowej karty. / Bookmarks always at hand: syncing bookmarks between browsers through the user's own server and quick access to them on the new tab page.
+
+**Akapit do opisu (PL):**
+Nowa karta z Twoimi zakładkami: kafelki z paska zakładek, wyszukiwarka z przyciskami (Google, Allegro, YouTube, Mapy i inne do przypięcia), opcjonalne podpowiedzi z zakładek i z Google. Nową kartę można wyłączyć w ustawieniach.
+
+**Akapit do opisu (EN):**
+A new tab with your bookmarks: tiles from the bookmarks bar, a search box with buttons (Google, Allegro, YouTube, Maps and more to pin), optional suggestions from bookmarks and from Google. The new tab can be turned off in settings.
+
+**Nowe uzasadnienia uprawnień:**
+- Zastąpienie nowej karty (`chrome_url_overrides`): Strona nowej karty pokazuje zakładki użytkownika jako kafelki — to część głównej funkcji (dostęp do zsynchronizowanych zakładek). Można ją wyłączyć w ustawieniach. / The new tab page shows the user's bookmarks as tiles, part of the core feature. It can be turned off in settings.
+- `tabs` (opcjonalne): Tylko w Operze, tylko po włączeniu opcji „Przejmuj nową kartę w Operze”: Opera ignoruje zastąpienie nowej karty, więc wtyczka rozpoznaje kartę ze Speed Dialem i przestawia ją na swoją stronę. Wyłączenie opcji cofa zgodę. / Opera only, only after enabling the option: Opera ignores the new tab override, so the extension detects the Speed Dial tab and redirects it to its page. Disabling the option revokes the permission.
+- Host `https://suggestqueries.google.com/*` (w ramach opcjonalnych hostów): Podpowiedzi wyszukiwania Google, tylko po włączeniu opcji; wpisywany tekst jest wysyłany do Google bez ciasteczek. / Google search suggestions, only when enabled; typed text is sent to Google without cookies.
+
+**Prywatność — dopisać do docs/PRYWATNOSC.md** (zrobione w 0.6.0): podpowiedzi Google są opcjonalne i domyślnie wyłączone.

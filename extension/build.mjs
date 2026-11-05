@@ -88,6 +88,8 @@ function manifestFor(target) {
     return {
       ...shared,
       key: CHROME_KEY,
+      // Tylko Opera: rozpoznanie Speed Dialu na nowej karcie; proszone przy wlaczeniu opcji
+      optional_permissions: ['tabs'],
       background: { service_worker: 'background.js' },
       // Ponizej tej wersji Chrome nie zwracal obietnic ze wszystkich uzywanych API
       minimum_chrome_version: '116',

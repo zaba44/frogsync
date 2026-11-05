@@ -2,6 +2,10 @@ import { wx, type WxBookmarkNode } from './wx.js';
 import { nativeRootId, resolveRoots } from './local.js';
 import { KEYS } from './storage.js';
 import { DEFAULT_SETTINGS, type Settings } from './types.js';
+import {
+  asAddress, engineById, googleSuggestUrl, mergeSuggestions, normalizePinned, parseGoogleSuggest, searchUrl,
+  DEFAULT_ENGINE, type BookmarkHit, type SearchEngine, type Suggestion,
+} from './core/search.js';
 
 // ============================================================
 // Strona nowej karty — dostawa 3.0 (proba przegladarek).
@@ -95,63 +99,174 @@ async function render(): Promise<void> {
   ($('empty') as HTMLElement).hidden = items.length > 0;
 }
 
-// ---- wyszukiwarka: lokalne podpowiedzi z zakladek, siec dopiero po Enter ----
+// ---- wyszukiwarka ----
+//
+// Enter zawsze szuka wpisanego tekstu (albo otwiera go jako adres) — nigdy nie
+// otwiera sam z siebie pierwszej podpowiedzi. Podpowiedz wybiera sie strzalkami.
+// Zakladki i Google to osobne opcje; Google tylko po zgodzie, bez cookies.
 
+let settings: Settings = DEFAULT_SETTINGS;
+let suggestions: Suggestion[] = [];
+let selectedKey: string | null = null;
+let requestNo = 0;
+let webAbort: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
-function looksLikeUrl(text: string): boolean {
-  return /^[a-z]+:\/\//i.test(text) || /^[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/.test(text);
+const input = () => $('search') as HTMLInputElement;
+const box = () => $('suggestions') as HTMLElement;
+
+function engine(id: string): SearchEngine {
+  return engineById(id) ?? engineById(DEFAULT_ENGINE)!;
 }
 
-async function suggest(query: string): Promise<void> {
-  const box = $('suggestions');
-  box.replaceChildren();
-  if (query.trim().length < 2) { box.hidden = true; return; }
-  const found = (await wx.bookmarks.search(query)).filter(n => n.url && /^https?:/i.test(n.url)).slice(0, 8);
-  for (const node of found) {
-    const a = document.createElement('a');
-    a.href = node.url!;
-    a.className = 'suggestion';
-    const t = document.createElement('span');
-    t.textContent = node.title || hostOf(node.url!);
-    const u = document.createElement('span');
-    u.className = 'muted';
-    u.textContent = hostOf(node.url!);
-    a.append(t, u);
-    box.append(a);
+function go(url: string): void { location.href = url; }
+
+function runSearch(engineId: string, allowAddress: boolean): void {
+  const q = input().value.trim();
+  if (!q) { input().focus(); return; }
+  const address = allowAddress && settings.enterOpensAddress ? asAddress(q) : null;
+  go(address ?? searchUrl(engine(engineId), q));
+}
+
+function renderSuggestions(): void {
+  const list = box();
+  list.replaceChildren();
+  for (const s of suggestions) {
+    const row = document.createElement('div');
+    row.className = 'suggestion' + (s.key === selectedKey ? ' active' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(s.key === selectedKey));
+    const main = document.createElement('span');
+    const side = document.createElement('span');
+    side.className = 'muted';
+    if (s.kind === 'bookmark') {
+      main.textContent = '★ ' + (s.title || hostOf(s.url));
+      side.textContent = hostOf(s.url);
+    } else {
+      main.textContent = s.text;
+      side.textContent = 'Google';
+    }
+    row.append(main, side);
+    // mousedown zamiast click: pole nie traci fokusu przed wyborem
+    row.addEventListener('mousedown', e => { e.preventDefault(); choose(s); });
+    list.append(row);
   }
-  box.hidden = found.length === 0;
+  list.hidden = suggestions.length === 0;
+  input().setAttribute('aria-expanded', String(!list.hidden));
+}
+
+function choose(s: Suggestion): void {
+  if (s.kind === 'bookmark') { go(s.url); return; }
+  input().value = s.text;
+  go(searchUrl(engine(settings.defaultEngine), s.text));
+}
+
+function closeSuggestions(): void {
+  suggestions = []; selectedKey = null; renderSuggestions();
+}
+
+async function bookmarkHits(q: string): Promise<BookmarkHit[]> {
+  if (!settings.searchBookmarks) return [];
+  try {
+    return (await wx.bookmarks.search(q)).filter(n => n.url && /^https?:/i.test(n.url))
+      .slice(0, 6).map(n => ({ title: n.title, url: n.url! }));
+  } catch { return []; }
+}
+
+async function webHits(q: string): Promise<string[]> {
+  if (!settings.googleSuggest || engine(settings.defaultEngine).suggest !== 'google') return [];
+  if (!navigator.onLine) return [];
+  webAbort?.abort();
+  const ctrl = new AbortController();
+  webAbort = ctrl;
+  const timer = setTimeout(() => ctrl.abort(), 2500);
+  try {
+    const r = await fetch(googleSuggestUrl(q), { signal: ctrl.signal, credentials: 'omit', cache: 'no-store' });
+    return r.ok ? parseGoogleSuggest(await r.json()) : [];
+  } catch { return []; }   // offline, brak zgody, przerwane — po prostu bez podpowiedzi
+  finally { clearTimeout(timer); }
+}
+
+async function refreshSuggestions(): Promise<void> {
+  const q = input().value.trim();
+  const no = ++requestNo;
+  if (q.length < 2) { closeSuggestions(); return; }
+  // Zakladki od razu, Google dociaga sie pozniej — zaznaczenie trzymamy po kluczu, nie po pozycji
+  const marks = await bookmarkHits(q);
+  if (no !== requestNo) return;
+  suggestions = mergeSuggestions(q, marks, []);
+  if (!suggestions.some(s => s.key === selectedKey)) selectedKey = null;
+  renderSuggestions();
+  const web = await webHits(q);
+  if (no !== requestNo || input().value.trim() !== q) return;
+  suggestions = mergeSuggestions(q, marks, web);
+  if (!suggestions.some(s => s.key === selectedKey)) selectedKey = null;
+  renderSuggestions();
+}
+
+function moveSelection(step: number): void {
+  if (suggestions.length === 0) return;
+  const i = suggestions.findIndex(s => s.key === selectedKey);
+  const next = i === -1 ? (step > 0 ? 0 : suggestions.length - 1) : i + step;
+  selectedKey = next < 0 || next >= suggestions.length ? null : suggestions[next].key;
+  renderSuggestions();
+}
+
+function renderEngines(): void {
+  const bar = $('engines');
+  bar.replaceChildren();
+  for (const id of normalizePinned(settings.pinnedEngines)) {
+    const e = engine(id);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'engine' + (e.id === settings.defaultEngine ? ' primary' : '');
+    const dot = document.createElement('span');
+    dot.className = 'engine-dot';
+    dot.style.background = e.color;
+    b.append(dot, document.createTextNode(e.name));
+    // Przycisk zawsze szuka tekstu pola, niezaleznie od zaznaczonej podpowiedzi
+    b.addEventListener('click', () => runSearch(e.id, false));
+    bar.append(b);
+  }
+  bar.hidden = bar.childElementCount === 0;
 }
 
 function wireSearch(): void {
-  const input = $('search') as HTMLInputElement;
-  input.addEventListener('input', () => {
+  const field = input();
+  const name = engine(settings.defaultEngine).name;
+  field.placeholder = settings.searchBookmarks ? `Szukaj w ${name} lub w zakładkach` : `Szukaj w ${name}`;
+  field.addEventListener('input', () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => void suggest(input.value), 120);
+    searchTimer = setTimeout(() => void refreshSuggestions(), 250);
   });
+  field.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
+    else if (e.key === 'Escape') { closeSuggestions(); }
+  });
+  field.addEventListener('blur', () => setTimeout(closeSuggestions, 150));
   $('search-form').addEventListener('submit', e => {
     e.preventDefault();
-    const q = input.value.trim();
-    if (!q) return;
-    const first = document.querySelector<HTMLAnchorElement>('#suggestions a');
-    if (first && !($('suggestions') as HTMLElement).hidden && first.textContent?.toLowerCase().includes(q.toLowerCase())) {
-      location.href = first.href; return;
-    }
-    location.href = looksLikeUrl(q)
-      ? (/^[a-z]+:\/\//i.test(q) ? q : `https://${q}`)
-      : `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+    const chosen = suggestions.find(s => s.key === selectedKey);
+    if (chosen) { choose(chosen); return; }
+    runSearch(settings.defaultEngine, true);
   });
+  renderEngines();
 }
 
 // ---- start ----
 
 void (async () => {
   const stored = (await wx.storage.local.get(KEYS.settings))[KEYS.settings] as Partial<Settings> | undefined;
-  const settings = { ...DEFAULT_SETTINGS, ...stored };
+  settings = { ...DEFAULT_SETTINGS, ...stored };
+
+  // ?view=start — adres wklejony jako strona startowa przegladarki (albo przekierowanie
+  // Opery): kafelki zawsze, niezaleznie od przelacznika nowej karty
+  const forced = new URLSearchParams(location.search).get('view') === 'start';
 
   // Kafelki wylaczone: lekka, pusta karta. Przegladarki nie pozwalaja wtyczce
   // wrocic do wlasnej nowej karty (Firefox wprost to blokuje), wiec nie probujemy.
-  if (!settings.startPage) {
+  if (!settings.startPage && !forced) {
     document.body.classList.add('blank');
     $('show-anyway').addEventListener('click', () => {
       document.body.classList.remove('blank');

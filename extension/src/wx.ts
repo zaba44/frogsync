@@ -21,6 +21,15 @@ export interface WxBookmarkNode {
   children?: WxBookmarkNode[];
 }
 
+export interface WxTab {
+  id?: number;
+  windowId: number;
+  url?: string;
+  /** Chromium: adres, do ktorego karta wlasnie przechodzi (przed zaladowaniem). */
+  pendingUrl?: string;
+  incognito: boolean;
+}
+
 export interface WxAlarm {
   name: string;
   scheduledTime: number;
@@ -85,10 +94,14 @@ interface WxApi {
   };
   tabs: {
     create(props: { url?: string; active?: boolean }): Promise<unknown>;
+    update(tabId: number, props: { url?: string }): Promise<unknown>;
+    query(info: { windowId?: number; windowType?: 'normal' }): Promise<WxTab[]>;
+    onCreated: WxEvent<(tab: WxTab) => void>;
   };
   permissions: {
-    contains(perms: { origins?: string[] }): Promise<boolean>;
-    request(perms: { origins?: string[] }): Promise<boolean>;
+    contains(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
+    request(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
+    remove(perms: { origins?: string[]; permissions?: string[] }): Promise<boolean>;
   };
 }
 
