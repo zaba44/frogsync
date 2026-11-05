@@ -50,7 +50,8 @@ a { color: var(--blue); }
   padding-bottom: 12px; margin-bottom: 12px;
   border-bottom: 1px solid var(--border);
 }
-.header img { width: 28px; height: 28px; }
+.header img { width: 44px; height: 44px; flex: none; }
+.page .header img { width: 56px; height: 56px; }
 
 .card {
   background: var(--bg-soft);
