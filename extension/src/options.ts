@@ -1,4 +1,4 @@
-import { wx } from './wx.js';
+import { wx, isGecko } from './wx.js';
 import { BUILTIN_RULES, type FilterConfig } from './filters.js';
 import { parseBookmarkHtml, type BookmarkHtmlSource } from './bookmark-html.js';
 import type { RestorePlan, RestoreTree } from './core/restore.js';
@@ -75,7 +75,11 @@ $('pair-form').addEventListener('submit', async event => {
   button.disabled = true;
   try {
     if (!preview || preview.url !== url || preview.code !== code) {
-      const granted = await wx.permissions.request({ origins: [new URL(url).origin + '/*'] });
+      // Firefox nie dopasowuje wzorca z portem (https://host:18443/*) do zapytan, choc go przyjmuje
+      // i pokazuje jako nadany — prosimy wiec o host bez portu, ktory obejmuje kazdy port
+      const target = new URL(url);
+      const origin = isGecko() ? `${target.protocol}//${target.hostname}/*` : `${target.origin}/*`;
+      const granted = await wx.permissions.request({ origins: [origin] });
       if (!granted) { show('Kliknij „Dalej” i zezwól dodatkowi na połączenie z serwerem.'); return; }
 
       const problem = await probe(url);

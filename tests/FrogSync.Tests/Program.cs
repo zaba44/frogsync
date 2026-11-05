@@ -164,6 +164,34 @@ try
             "Brak generacji.");
     });
 
+    await h.Run("CORS: tylko dla wtyczek, z obsluga preflight", async () =>
+    {
+        // Firefox nie dopasowuje uprawnienia z portem i bez tych naglowkow blokuje odpowiedz
+        using var preflight = new HttpRequestMessage(HttpMethod.Options, "/api/v1/pair/preview");
+        preflight.Headers.Add("Origin", "moz-extension://abc");
+        preflight.Headers.Add("Access-Control-Request-Method", "POST");
+        preflight.Headers.Add("Access-Control-Request-Headers", "content-type,x-frogsync-version");
+        using var pre = await h.Anonymous.SendAsync(preflight);
+        Expect((int)pre.StatusCode == 204, $"Preflight: HTTP {(int)pre.StatusCode}.");
+        Expect(pre.Headers.TryGetValues("Access-Control-Allow-Origin", out var allow) && allow.Single() == "moz-extension://abc",
+            "Preflight bez Access-Control-Allow-Origin dla wtyczki.");
+
+        using var health = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        health.Headers.Add("Origin", "moz-extension://abc");
+        using var ok = await h.Anonymous.SendAsync(health);
+        Expect(ok.Headers.Contains("Access-Control-Allow-Origin"), "healthz bez CORS dla wtyczki.");
+
+        using var foreign = new HttpRequestMessage(HttpMethod.Get, "/healthz");
+        foreign.Headers.Add("Origin", "https://evil.example");
+        using var no = await h.Anonymous.SendAsync(foreign);
+        Expect(!no.Headers.Contains("Access-Control-Allow-Origin"), "Strona WWW dostala naglowek CORS.");
+
+        using var panel = new HttpRequestMessage(HttpMethod.Get, "/admin/api/status");
+        panel.Headers.Add("Origin", "moz-extension://abc");
+        using var adm = await h.Anonymous.SendAsync(panel);
+        Expect(!adm.Headers.Contains("Access-Control-Allow-Origin"), "Panel admina dostal naglowek CORS.");
+    });
+
     SyncOp? originalCreate = null;
     NodeDto? originalNode = null;
 

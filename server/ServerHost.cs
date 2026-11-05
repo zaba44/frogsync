@@ -54,6 +54,7 @@ public static class ServerHost
 
         app.Use(NetworkFilter(config, app.Logger));
         app.Use(SecurityHeaders);
+        app.Use(ExtensionCors);
 
         app.UseDefaultFiles();
         app.UseStaticFiles();
@@ -99,10 +100,40 @@ public static class ServerHost
         headers["Content-Security-Policy"] =
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; " +
             "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-        // Swiadomie BEZ Access-Control-Allow-Origin: wtyczka z uprawnieniem do hosta
-        // nie podlega CORS, a strony WWW maja nie moc czytac odpowiedzi.
         await next();
     }
+
+    /// <summary>
+    /// CORS wylacznie dla wtyczek (moz-extension://, chrome-extension://), nigdy dla stron WWW.
+    /// Wtyczka z uprawnieniem do hosta powinna omijac CORS, ale Firefox nie dopasowuje
+    /// uprawnienia z portem w adresie i blokuje odpowiedz. Dostep i tak wymaga tokenu
+    /// urzadzenia albo jednorazowego kodu parowania; panel admina zostaje bez CORS.
+    /// </summary>
+    private static async Task ExtensionCors(HttpContext http, Func<Task> next)
+    {
+        var path = http.Request.Path;
+        var origin = http.Request.Headers.Origin.ToString();
+        if ((path.StartsWithSegments("/api") || path.Equals("/healthz")) && IsExtensionOrigin(origin))
+        {
+            var headers = http.Response.Headers;
+            headers["Access-Control-Allow-Origin"] = origin;
+            headers["Vary"] = "Origin";
+            if (HttpMethods.IsOptions(http.Request.Method) && http.Request.Headers.ContainsKey("Access-Control-Request-Method"))
+            {
+                headers["Access-Control-Allow-Methods"] = "GET, POST";
+                headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-FrogSync-Version";
+                headers["Access-Control-Max-Age"] = "600";
+                http.Response.StatusCode = StatusCodes.Status204NoContent;
+                return;
+            }
+        }
+        await next();
+    }
+
+    private static bool IsExtensionOrigin(string origin) =>
+        origin.StartsWith("moz-extension://", StringComparison.OrdinalIgnoreCase) ||
+        origin.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase) ||
+        origin.StartsWith("extension://", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>Sprzatanie raz na dobe: stare wpisy dziennika i idempotencji.</summary>
