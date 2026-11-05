@@ -1244,6 +1244,9 @@ await scenario('nowa przegladarka w trybie "zastap": zero zakladek producenta na
     expect(b.bookmarks.find(spam), `"${spam}" zniknelo z nowej przegladarki zamiast trafic do kwarantanny`);
   }
   expect(b.bookmarks.findAll(n => n.url === 'https://poczta.pl/').length === 1, 'Poczta zdublowana');
+  use(b);
+  const notice = await getLocal<{ count: number } | null>('quarantineNotice', null);
+  expect(notice?.count === 3, `okienko nie dostalo informacji o 3 odlozonych zakladkach (${JSON.stringify(notice)})`);
 
   // Pochodzenie odtworzone w kwarantannie
   const quarantine = b.bookmarks.find(QUARANTINE_TITLE)!;

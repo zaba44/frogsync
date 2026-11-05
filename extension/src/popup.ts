@@ -27,6 +27,24 @@ function when(ms?: number): string {
   return new Date(ms).toLocaleString('pl-PL');
 }
 
+/** Jednorazowa informacja o folderze z zakladkami sprzed podlaczenia przegladarki. */
+async function quarantineBanner(banners: HTMLElement): Promise<void> {
+  const notice = (await wx.storage.local.get('quarantineNotice'))['quarantineNotice'] as { count: number } | null | undefined;
+  if (!notice?.count) return;
+  const box = document.createElement('div');
+  box.className = 'banner info';
+  const p = document.createElement('p');
+  const n = notice.count;
+  p.textContent = `Odłożono ${n} ${n === 1 ? 'zakładkę' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'zakładki' : 'zakładek'} ` +
+    'do folderu „Inne zakładki → Zakładki sprzed FrogSync”. To zakładki, które ta przeglądarka miała przed podłączeniem. ' +
+    'Przejrzyj je: potrzebne przenieś w zwykłe miejsce, resztę usuń razem z folderem.';
+  const ok = document.createElement('button');
+  ok.textContent = 'Rozumiem';
+  ok.addEventListener('click', async () => { await wx.storage.local.remove('quarantineNotice'); box.remove(); });
+  box.append(p, ok);
+  banners.prepend(box);
+}
+
 function render(status: SyncStatus, server: ServerSession | null, conflicts: ConflictNote[]): void {
   const connection = status.connection === 'ok' && status.lastError ? 'error' : status.connection;
   const [text, hint, dot] = TEXT[connection] ?? [connection, '', 'idle'];
@@ -45,6 +63,7 @@ function render(status: SyncStatus, server: ServerSession | null, conflicts: Con
 
   const banners = $('banners');
   banners.replaceChildren();
+  void quarantineBanner(banners);
   if (server && (status.connection === 'outdated' || status.updateAvailable)) {
     const box = document.createElement('div');
     box.className = status.connection === 'outdated' ? 'banner error' : 'hint';

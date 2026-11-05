@@ -158,6 +158,9 @@ async function saveIntents(i: Record<string, Intent>) { await setLocal({ intents
 
 // ---- kwarantanna: lista folderow trzymana poza stanem sesji (przezywa rozlaczenie) ----
 
+/** Komunikat w okienku: ile zakladek odlozono do kwarantanny przy podlaczaniu. */
+export const QUARANTINE_NOTICE = 'quarantineNotice';
+
 export async function quarantineIds(): Promise<string[]> { return getLocal<string[]>('quarantine', []); }
 
 async function restoreRoots(s: State | null) {
@@ -742,9 +745,19 @@ async function runBootstrap(s: State): Promise<number> {
   if (plan.quarantine.length > 0) {
     const quarantine = await ensureQuarantine();
     const folderCache = new Map<string, string>();
+    let moved = 0;
     for (const move of plan.quarantine) {
       const target = await ensurePath(quarantine, move.path, folderCache);
-      if (await exists(move.localId)) await moveTo(move.localId, target);
+      if (await exists(move.localId)) {
+        const node = index.get(move.localId);
+        moved += node?.kind === 'bookmark' ? 1 : countBookmarks(node);
+        await moveTo(move.localId, target);
+      }
+    }
+    // Uzytkownik ma sie dowiedziec o folderze z okienka, a nie trafic na niego przypadkiem
+    if (moved > 0) {
+      const prev = await getLocal<{ count: number } | null>(QUARANTINE_NOTICE, null);
+      await setLocal({ [QUARANTINE_NOTICE]: { count: (prev?.count ?? 0) + moved, at: Date.now() } });
     }
   }
 
