@@ -15,6 +15,7 @@ import {
 } from './local.js';
 import type { ConflictNote, OpResult, ServerNode, ServerSession, SyncStatus } from './types.js';
 import { wx } from './wx.js';
+import { importKey, missingShortcuts, type HomepageShortcut } from './core/homepage-import.js';
 import { compareVersions } from './extension-version.js';
 import { planRestore, RESTORE_ROOTS, type RestoreTree } from './core/restore.js';
 import { formatBookmarkHtml } from './bookmark-html.js';
@@ -519,6 +520,34 @@ export async function editStartBookmark(
   });
 }
 
+
+/**
+ * Import skrotow ze starego Homepage do folderu zakladek. Zwykla zmiana zakladek:
+ * wyjdzie na serwer normalnym diffem. Punkt przywracania przed zmiana; ponowny
+ * (albo przerwany) import tego samego pliku dopisuje tylko brakujace wpisy.
+ */
+export async function importHomepageToFolder(
+  shortcuts: HomepageShortcut[], root: 'root:toolbar' | 'root:unsorted',
+): Promise<{ added: number; skipped: number }> {
+  return exclusive(MAIN_LOCK, async () => {
+    await noRestoreInProgress();
+    await resolveRoots();
+    const s = await loadState();
+    await checkpoint('import', s);
+    const key = importKey(shortcuts);
+    const imports = await getLocal<Record<string, string>>('homepageImports', {});
+    let folderId = imports[key];
+    if (!folderId || !(await exists(folderId))) {
+      const parent = nativeRootId(root);
+      if (!parent) throw new Error('Ta przeglądarka nie ma wskazanego folderu głównego.');
+      folderId = (await wx.bookmarks.create({ parentId: parent, title: 'Skróty ze strony startowej' })).id;
+      await setLocal({ homepageImports: { ...imports, [key]: folderId } });
+    }
+    const missing = missingShortcuts(shortcuts, (await children(folderId)).map(c => c.url));
+    for (const item of missing) await wx.bookmarks.create({ parentId: folderId, title: item.title, url: item.url });
+    return { added: missing.length, skipped: shortcuts.length - missing.length };
+  });
+}
 
 export async function clearConflicts(): Promise<SyncStatus> {
   return exclusive(MAIN_LOCK, async () => {

@@ -173,6 +173,17 @@
     <div class="muted">Przypięte wyszukiwarki pojawiają się jako przyciski pod polem wyszukiwania. Najwyżej <span id="pin-max"></span>; przypięto <span id="pin-count"></span>.</div>
     <p id="engine-new-notice" class="muted" hidden>W profilu są nowe wyszukiwarki — przypnij je poniżej.</p>
     <div id="engine-list" class="list"></div>
+
+    <h3>Import ze starej strony startowej</h3>
+    <div class="muted">Plik <span class="mono">start_konfiguracja.json</span> wyeksportowany ze starej strony startowej (Homepage). Ponowny import tego samego pliku nie zdubluje skrótów.</div>
+    <label class="field"><span>Plik</span><input type="file" id="hp-file" accept=".json,application/json"></label>
+    <label class="field"><span>Gdzie dodać skróty</span>
+      <select id="hp-target">
+        <option value="root:toolbar">Nowy folder „Skróty ze strony startowej” na pasku zakładek</option>
+        <option value="root:unsorted">Nowy folder „Skróty ze strony startowej” w Innych zakładkach</option>
+        <option value="custom">Własne kafelki profilu (blok „Skróty ze strony startowej”)</option>
+      </select></label>
+    <button type="button" id="hp-import">Importuj</button>
   </div>
 
   <div class="card">

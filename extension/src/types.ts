@@ -169,6 +169,7 @@ export type Message =
   | { type: 'GET_FILTERS' }
   | { type: 'SAVE_FILTERS'; config: unknown }
   | { type: 'CLEAR_CONFLICTS' }
+  | { type: 'IMPORT_HOMEPAGE'; shortcuts: import('./core/homepage-import.js').HomepageShortcut[]; root: 'root:toolbar' | 'root:unsorted' }
   | { type: 'PREVIEW_RESTORE'; tree: RestoreTree }
   | { type: 'RUN_RESTORE'; tree: RestoreTree; summaryId: string }
   | { type: 'LIST_RESTORE_POINTS' }

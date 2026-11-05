@@ -91,3 +91,15 @@ A new tab with your bookmarks: tiles from the bookmarks bar, a search box with b
 - Host `https://suggestqueries.google.com/*` (w ramach opcjonalnych hostów): Podpowiedzi wyszukiwania Google, tylko po włączeniu opcji; wpisywany tekst jest wysyłany do Google bez ciasteczek. / Google search suggestions, only when enabled; typed text is sent to Google without cookies.
 
 **Prywatność — dopisać do docs/PRYWATNOSC.md** (zrobione w 0.6.0): podpowiedzi Google są opcjonalne i domyślnie wyłączone.
+
+## Aktualizacja przy wersji 0.8.0 (bloki, szablony, ikony)
+
+**Akapit do opisu (PL), dopisać do akapitu o nowej karcie:**
+Kafelki z wybranych folderów zakładek, własne kafelki i — opcjonalnie — najczęściej odwiedzane strony; cztery szablony wyglądu (Klasyczny, Kompaktowy, Szkło z własnym tłem, Żywy). Edycja kafelków prosto ze strony i import skrótów ze starej strony startowej.
+
+**Akapit (EN):**
+Tiles from chosen bookmark folders, your own tiles and — optionally — your most visited sites; four looks (Classic, Compact, Glass with your own background, Live). Edit tiles right on the page and import shortcuts from an older start page.
+
+**Nowe uzasadnienia uprawnień (wszystkie opcjonalne, proszone dopiero po włączeniu opcji):**
+- `topSites`: Blok „Najczęściej odwiedzane” na stronie nowej karty, tylko po włączeniu go w ustawieniach. Lista jest odczytywana lokalnie przy otwarciu karty, nie jest zapisywana ani nigdzie wysyłana. / The "Most visited" block on the new tab page, only after enabling it in settings. The list is read locally when the tab opens and is neither stored nor sent anywhere.
+- `favicon`: Ikony stron na kafelkach, tylko po włączeniu opcji „Ikony stron”. Ikony pochodzą z pamięci podręcznej przeglądarki; wtyczka nie pobiera ich z sieci. / Site icons on tiles, only after enabling the option. Icons come from the browser's own favicon cache; the extension does not fetch them from the network.

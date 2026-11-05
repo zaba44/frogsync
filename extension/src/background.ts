@@ -5,7 +5,7 @@ import * as api from './api.js';
 import {
   syncOnce, loadStatus, pairWith, unpair, confirmDeletions, conflictNotes, clearConflicts,
   previewRestore, runRestore, listRestorePoints, previewUndo, undoToPoint, exportPointHtml,
-  restoreConflict, editStartBookmark,
+  restoreConflict, editStartBookmark, importHomepageToFolder,
 } from './engine.js';
 import { loadFilterConfig, saveFilterConfig, type FilterConfig } from './filters.js';
 import { detectBrowser } from './identity.js';
@@ -158,6 +158,9 @@ async function handle(message: Message): Promise<unknown> {
 
     case 'CONFIRM_DELETIONS':
       return withBadge(await confirmDeletions(message.which));
+
+    case 'IMPORT_HOMEPAGE':
+      return importHomepageToFolder(message.shortcuts, message.root);
 
     case 'CLEAR_CONFLICTS':
       return clearConflicts();

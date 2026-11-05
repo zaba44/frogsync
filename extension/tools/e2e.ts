@@ -1351,6 +1351,38 @@ await scenario('nowa karta: fokus tylko przy starcie i bez zmiany wpisanego teks
 });
 
 
+await scenario('import ze starego Homepage: formaty, celowe duplikaty, ponowny i przerwany import', async () => {
+  const hp = await import('../src/core/homepage-import.js');
+  const engine = await import('../src/engine.js');
+  const rows = [
+    { id: '11111111-1111-4111-8111-111111111111', title: 'Onet', url: 'https://www.onet.pl/' },
+    { id: '22222222-2222-4222-8222-222222222222', title: 'Pogoda', url: 'https://pogoda.example/' },
+    { id: '33333333-3333-4333-8333-333333333333', title: 'Onet drugi raz', url: 'https://www.onet.pl/' },
+    { id: '44444444-4444-4444-8444-444444444444', title: 'Zly', url: 'javascript:alert(1)' },
+  ];
+  for (const file of [JSON.stringify({ document: { settings: {}, shortcuts: rows } }), JSON.stringify({ shortcuts: rows }), JSON.stringify(rows)]) {
+    expect(hp.parseHomepageExport(file).length === 3, 'zly odczyt formatu eksportu Homepage albo przepuszczony javascript:');
+  }
+  const shortcuts = hp.parseHomepageExport(JSON.stringify({ shortcuts: rows }));
+
+  const a = await newBrowser('Import A', 'chromium', 'Import Homepage');
+  const b = await newBrowser('Import B', 'gecko', 'Import Homepage');
+  use(a);
+  a.bookmarks.crashAfter = 2;   // folder + pierwsza zakladka, potem "ubicie"
+  try { await engine.importHomepageToFolder(shortcuts, 'root:toolbar'); } catch { /* symulowane przerwanie */ }
+  const second = await engine.importHomepageToFolder(shortcuts, 'root:toolbar');
+  expect(second.added === 2 && second.skipped === 1, `wznowienie: ${JSON.stringify(second)}`);
+  const again = await engine.importHomepageToFolder(shortcuts, 'root:toolbar');
+  expect(again.added === 0, 'ponowny import zdublowal skroty');
+  const folder = a.bookmarks.findAll(n => n.title === 'Skróty ze strony startowej');
+  expect(folder.length === 1, `folderow importu: ${folder.length}`);
+  expect(a.bookmarks.findAll(n => n.url === 'https://www.onet.pl/').length === 2, 'celowy duplikat z pliku zginal');
+  expect((await engine.listRestorePoints()).some(p => p.reason === 'import'), 'brak punktu przywracania przed importem');
+  await converge(a, b);
+  expect(b.bookmarks.find('Pogoda') && b.bookmarks.findAll(n => n.url === 'https://www.onet.pl/').length === 2,
+    'zaimportowane skroty nie dotarly do drugiej przegladarki');
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

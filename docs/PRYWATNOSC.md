@@ -1,6 +1,6 @@
 # FrogSync — polityka prywatności / Privacy policy
 
-*Obowiązuje od 5 listopada 2026 r., aktualizacja dla wersji 0.6.0. / Effective 5 November 2026, updated for 0.6.0.*
+*Obowiązuje od 5 listopada 2026 r., aktualizacja dla wersji 0.8.0. / Effective 5 November 2026, updated for 0.8.0.*
 
 ## Po polsku
 
@@ -13,6 +13,8 @@ FrogSync synchronizuje zakładki między przeglądarkami **wyłącznie przez ser
 **Uprawnienia.** `bookmarks` — odczyt i zapis zakładek, czyli główna funkcja. `storage` — zapis ustawień i stanu synchronizacji. `alarms` — okresowe sprawdzanie zmian na serwerze. Dostęp do adresu serwera (`https://…`) jest prośbą opcjonalną: przeglądarka pyta o zgodę dla jednego, wskazanego przez użytkownika adresu.
 
 **Strona nowej karty.** Kafelki i wyszukiwanie w zakładkach działają lokalnie. Podpowiedzi Google są opcjonalne i domyślnie wyłączone; po włączeniu wpisywany w polu wyszukiwania tekst jest wysyłany do Google (suggestqueries.google.com) bez ciasteczek i bez danych FrogSync. Wyszukanie przyciskiem otwiera stronę wybranej wyszukiwarki, tak jak zwykłe wyszukiwanie. W Operze, po włączeniu opcji, wtyczka odczytuje adres nowo otwartej karty wyłącznie po to, by rozpoznać Speed Dial — nie zapisuje go i nigdzie nie wysyła.
+
+**Najczęściej odwiedzane i ikony stron (opcjonalne).** Po włączeniu bloku „Najczęściej odwiedzane” wtyczka odczytuje z przeglądarki listę najczęściej odwiedzanych stron wyłącznie po to, by pokazać ją na nowej karcie — nie zapisuje jej i nigdzie nie wysyła, także na serwer FrogSync. Ikony stron na kafelkach (opcja) pochodzą z pamięci podręcznej przeglądarki, bez pobierania z sieci. Własne kafelki i ustawienia strony startowej profilu są przechowywane na serwerze użytkownika, jak zakładki.
 
 **Usunięcie danych.** Odinstalowanie wtyczki usuwa jej dane z przeglądarki. Dane na serwerze kontroluje właściciel serwera (panel administracyjny: odłączenie urządzenia, usunięcie profilu, kopie zapasowe).
 
@@ -29,6 +31,8 @@ FrogSync syncs bookmarks between browsers **only through a server that the user 
 **Permissions.** `bookmarks` — read and write bookmarks (the core feature). `storage` — settings and sync state. `alarms` — periodic checks for changes on the server. Host access (`https://…`) is optional and requested only for the single server address the user enters.
 
 **New tab page.** Tiles and bookmark search work locally. Google suggestions are optional and off by default; when enabled, text typed in the search box is sent to Google (suggestqueries.google.com) without cookies or FrogSync data. In Opera, when the option is enabled, the extension reads the URL of a newly opened tab only to detect Speed Dial — it is neither stored nor sent anywhere.
+
+**Most visited and site icons (optional).** When the "Most visited" block is enabled, the extension reads the browser's most visited sites only to show them on the new tab — it neither stores nor sends them anywhere, including the FrogSync server. Site icons on tiles (optional) come from the browser's favicon cache, without network requests. Custom tiles and start page settings are stored on the user's server, like bookmarks.
 
 **Data removal.** Uninstalling the extension removes its data from the browser. Data on the server is controlled by the server owner (admin panel: revoke device, delete profile, backups).
 

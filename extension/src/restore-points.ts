@@ -12,7 +12,8 @@ export type RestoreReason =
   | 'html'
   | 'undo'
   | 'remote-delete'
-  | 'local-delete';
+  | 'local-delete'
+  | 'import';
 
 export interface RestorePointSummary {
   id: string;

@@ -3,7 +3,10 @@ import { BUILTIN_RULES, type FilterConfig } from './filters.js';
 import { parseBookmarkHtml, type BookmarkHtmlSource } from './bookmark-html.js';
 import { isOpera } from './opera-newtab.js';
 import { BUILTIN_ENGINES, DEFAULT_ENGINE, GOOGLE_SUGGEST_ORIGIN, MAX_PINNED, engineById, normalizePinned, type SearchEngine } from './core/search.js';
-import { readStartPage, STARTPAGE_CACHE } from './startpage-cache.js';
+import { readStartPage, STARTPAGE_CACHE, cacheKey } from './startpage-cache.js';
+import { parseHomepageExport, type HomepageShortcut } from './core/homepage-import.js';
+import { customBlocks } from './core/startpage.js';
+import { saveCustomDraft } from './startpage-edit.js';
 import { TEMPLATES, type StartTemplate } from './core/startpage.js';
 import { KEYS } from './storage.js';
 import type { RestorePlan, RestoreTree } from './core/restore.js';
@@ -168,6 +171,7 @@ const REASON: Record<RestoreReason, string> = {
   undo: 'Cofnięcie do punktu',
   'remote-delete': 'Masowe usunięcie z innej przeglądarki',
   'local-delete': 'Wysłanie masowego usunięcia',
+  import: 'Import skrótów ze starej strony startowej',
 };
 
 const dialog = $('restore-dialog') as HTMLDialogElement;
@@ -557,7 +561,47 @@ function renderEngineList(): void {
   }
 }
 
+// ---- import ze starego Homepage ----
+
+async function importToCustom(shortcuts: HomepageShortcut[]): Promise<string> {
+  const { cache } = await readStartPage();
+  const session = (await wx.storage.local.get(KEYS.server))[KEYS.server] as ServerSession | null;
+  if (!session || !cache) throw new Error('Własne kafelki wymagają połączenia z serwerem i pobranej konfiguracji profilu. Kliknij „Synchronizuj teraz” i spróbuj ponownie.');
+  const blocks = customBlocks(cache.snapshot);
+  let block = blocks.find(b => b.id === 'homepage-import');
+  if (!block) { block = { id: 'homepage-import', type: 'custom', title: 'Skróty ze strony startowej', tiles: [] }; blocks.push(block); }
+  const known = new Set(blocks.flatMap(b => b.tiles.map(t => t.id)));
+  const fresh = shortcuts.filter(s => !known.has(s.id));
+  if (fresh.length === 0) return 'Wszystkie skróty z tego pliku są już we własnych kafelkach.';
+  if (blocks.reduce((n, b) => n + b.tiles.length, 0) + fresh.length > 200)
+    throw new Error('Własnych kafelków może być najwyżej 200. Zaimportuj do folderu zakładek.');
+  block.tiles.push(...fresh.map(s => ({ id: s.id, title: s.title, url: s.url, color: null })));
+  const reply = await saveCustomDraft({ id: crypto.randomUUID(), key: cacheKey(session),
+    settingsVersion: cache.snapshot.settingsVersion, blocks, at: Date.now() });
+  if (!reply.saved) throw new Error(reply.message);
+  return `Dodano ${fresh.length} kafelków do bloku „Skróty ze strony startowej”.`;
+}
+
+function wireHomepageImport(): void {
+  $('hp-import').addEventListener('click', async () => {
+    const file = ($('hp-file') as HTMLInputElement).files?.[0];
+    if (!file) { show('Wybierz plik start_konfiguracja.json.'); return; }
+    try {
+      if (file.size > 512 * 1024) throw new Error('Plik jest za duży jak na eksport strony startowej.');
+      const shortcuts = parseHomepageExport(await file.text());
+      const target = ($('hp-target') as HTMLSelectElement).value;
+      const where = target === 'custom' ? 'do własnych kafelków profilu' : 'do nowego folderu „Skróty ze strony startowej”';
+      if (!confirm(`Zaimportować ${shortcuts.length} skrótów ${where}?`)) return;
+      if (target === 'custom') { show(await importToCustom(shortcuts), 'ok'); return; }
+      const r = await send<{ added: number; skipped: number }>({ type: 'IMPORT_HOMEPAGE', shortcuts, root: target as 'root:toolbar' | 'root:unsorted' });
+      show(r.added === 0 ? 'Wszystkie skróty z tego pliku są już w folderze — nic nie dodano.'
+        : `Dodano ${r.added} zakładek${r.skipped ? `, ${r.skipped} już było` : ''}. Przed importem zapisano punkt przywracania.`, 'ok');
+    } catch (err) { show(errorText(err)); }
+  });
+}
+
 async function initStartPage(settings: Settings): Promise<void> {
+  wireHomepageImport();
   startSettings = settings;
   await loadCatalog();
   mirrorStart();
