@@ -456,6 +456,12 @@ async function init(): Promise<void> {
   const poll = $('poll') as HTMLInputElement;
   auto.checked = settings.autoSync;
   poll.value = String(settings.pollMinutes);
+  const startPage = $('start-page') as HTMLInputElement;
+  startPage.checked = settings.startPage;
+  startPage.addEventListener('change', () => {
+    void send({ type: 'SAVE_SETTINGS', settings: { startPage: startPage.checked } })
+      .catch(err => show(errorText(err)));
+  });
 
   auto.addEventListener('change', () => {
     void send({ type: 'SAVE_SETTINGS', settings: { autoSync: auto.checked } })

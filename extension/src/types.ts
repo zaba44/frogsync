@@ -53,9 +53,11 @@ export interface ServerSession {
 export interface Settings {
   autoSync: boolean;
   pollMinutes: number;
+  /** Kafelki FrogSync na nowej karcie; false = pusta karta. */
+  startPage: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { autoSync: true, pollMinutes: 1 };
+export const DEFAULT_SETTINGS: Settings = { autoSync: true, pollMinutes: 1, startPage: true };
 
 export type ConnectionState =
   | 'unpaired'

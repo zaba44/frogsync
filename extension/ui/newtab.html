@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <title>Nowa karta</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+<main class="start">
+  <header class="start-head">
+    <img src="icons/icon128.png" alt="" class="start-logo">
+    <form id="search-form" class="search" role="search" autocomplete="off">
+      <input id="search" type="search" placeholder="Szukaj w zakładkach lub w sieci" aria-label="Szukaj">
+      <div id="suggestions" class="suggestions" hidden></div>
+    </form>
+  </header>
+
+  <nav id="crumbs" class="crumbs"></nav>
+  <section id="tiles" class="tiles" aria-label="Pasek zakładek"></section>
+  <p id="empty" class="muted center" hidden>Pasek zakładek jest pusty.</p>
+</main>
+
+<div class="blank-only">
+  <button id="show-anyway" class="linkish">Pokaż kafelki FrogSync</button>
+</div>
+
+<script src="newtab.js"></script>
+</body>
+</html>

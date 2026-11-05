@@ -55,8 +55,8 @@ const CHROME_KEY =
   'Eq5G9AMuM3U7Td6mdJUSXtOVv3zAZa4PH9aLWQPgWHOyQUArujYkXjXbCiVl+P5hmyRP3qUO6Xf43yOU1XLxHnzc' +
   'cADW/AH/qdNEOtfQyIRbB6WeCtuekc7ArwIDAQAB';
 
-const ENTRY_POINTS = ['src/background.ts', 'src/popup.ts', 'src/options.ts'];
-const STATIC_FILES = ['ui/popup.html', 'ui/options.html', 'ui/style.css'];
+const ENTRY_POINTS = ['src/background.ts', 'src/popup.ts', 'src/options.ts', 'src/newtab.ts'];
+const STATIC_FILES = ['ui/popup.html', 'ui/options.html', 'ui/newtab.html', 'ui/style.css', 'ui/newtab.css'];
 
 // ============================================================
 // Manifesty
@@ -78,6 +78,8 @@ function manifestFor(target) {
     // wszystkich stron, jak bylby to staly wpis host_permissions.
     optional_host_permissions: ['https://*/*'],
     options_ui: { page: 'options.html', open_in_tab: true },
+    // Podmiana zadeklarowana zawsze; wylaczenie kafelkow w ustawieniach pokazuje pusta karte
+    chrome_url_overrides: { newtab: 'newtab.html' },
     action: { default_popup: 'popup.html', ...(icons ? { default_icon: icons } : {}) },
     ...(icons ? { icons } : {}),
   };
@@ -129,7 +131,7 @@ async function runBuild() {
     rmSync(outDir, { recursive: true, force: true });
     mkdirSync(outDir, { recursive: true });
 
-    for (const name of ['background.js', 'popup.js', 'options.js']) {
+    for (const name of ['background.js', 'popup.js', 'options.js', 'newtab.js']) {
       cpSync(join(ROOT, '.bundle', name), join(outDir, name));
     }
 

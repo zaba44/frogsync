@@ -58,6 +58,7 @@ interface WxApi {
     getTree(): Promise<WxBookmarkNode[]>;
     get(id: string): Promise<WxBookmarkNode[]>;
     getChildren(id: string): Promise<WxBookmarkNode[]>;
+    search(query: string): Promise<WxBookmarkNode[]>;
     create(item: { parentId?: string; title?: string; url?: string; index?: number; type?: 'bookmark' | 'folder' | 'separator' }): Promise<WxBookmarkNode>;
     update(id: string, changes: { title?: string; url?: string }): Promise<WxBookmarkNode>;
     move(id: string, destination: { parentId?: string; index?: number }): Promise<WxBookmarkNode>;

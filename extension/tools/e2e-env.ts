@@ -1,7 +1,7 @@
-// ============================================================
+﻿// ============================================================
 // Atrapa srodowiska WebExtension dla testu end-to-end.
 //
-// MUSI byc zaimportowana PRZED kodem wtyczki — wx.ts odczytuje
+// MUSI byc zaimportowana PRZED kodem wtyczki â€” wx.ts odczytuje
 // globalThis.browser przy inicjalizacji modulu.
 //
 // Podmieniona jest wylacznie przegladarka. Silnik, klient HTTP i filtry to
@@ -31,7 +31,7 @@ export class SimulatedCrash extends Error {}
 class FakeBookmarks {
   private readonly nodes = new Map<string, Node>();
   private next = 100;
-  /** Ile kolejnych utworzen zakladek ma sie nie udac — symulacja chwilowego bledu przegladarki. */
+  /** Ile kolejnych utworzen zakladek ma sie nie udac â€” symulacja chwilowego bledu przegladarki. */
   failNextCreates = 0;
   /** Ile kolejnych przesuniec ma sie nie udac. */
   failNextMoves = 0;
@@ -45,7 +45,7 @@ class FakeBookmarks {
     if (this.crashAfter > 0) this.crashAfter--;
   }
 
-  /** Folder zarzadzany polityka (zakladki firmowe w Chromium) — tylko do odczytu. */
+  /** Folder zarzadzany polityka (zakladki firmowe w Chromium) â€” tylko do odczytu. */
   addManaged(title: string, urls: string[]) {
     const root = this.root();
     const folder: Node = { id: String(this.next++), parentId: root.id, title, type: 'folder', dateAdded: 0, unmodifiable: 'managed', children: [] };
@@ -63,8 +63,8 @@ class FakeBookmarks {
     const root: Node = { id: engine === 'gecko' ? 'root________' : '0', title: '', type: 'folder', dateAdded: 0, children: [] };
     this.nodes.set(root.id, root);
     const specials = engine === 'gecko'
-      ? [['menu________', 'Menu zakładek'], ['toolbar_____', 'Pasek zakładek'], ['unfiled_____', 'Inne zakładki'], ['mobile______', 'Zakładki z telefonu']]
-      : [['1', 'Pasek zakładek'], ['2', 'Inne zakładki'], ['3', 'Zakładki na telefonie']];
+      ? [['menu________', 'Menu zakĹ‚adek'], ['toolbar_____', 'Pasek zakĹ‚adek'], ['unfiled_____', 'Inne zakĹ‚adki'], ['mobile______', 'ZakĹ‚adki z telefonu']]
+      : [['1', 'Pasek zakĹ‚adek'], ['2', 'Inne zakĹ‚adki'], ['3', 'ZakĹ‚adki na telefonie']];
     for (const [id, title] of specials) {
       const node: Node = { id, parentId: root.id, title, type: 'folder', dateAdded: 0, children: [] };
       this.nodes.set(id, node);
