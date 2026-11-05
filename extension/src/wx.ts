@@ -28,6 +28,8 @@ export interface WxTab {
   /** Chromium: adres, do ktorego karta wlasnie przechodzi (przed zaladowaniem). */
   pendingUrl?: string;
   incognito: boolean;
+  index?: number;
+  openerTabId?: number;
 }
 
 export interface WxAlarm {
@@ -99,8 +101,9 @@ interface WxApi {
     setBadgeBackgroundColor(details: { color: string }): Promise<void>;
   };
   tabs: {
-    create(props: { url?: string; active?: boolean }): Promise<unknown>;
+    create(props: { url?: string; active?: boolean; index?: number; windowId?: number; openerTabId?: number }): Promise<WxTab>;
     update(tabId: number, props: { url?: string }): Promise<unknown>;
+    remove(tabId: number): Promise<void>;
     query(info: { windowId?: number; windowType?: 'normal' }): Promise<WxTab[]>;
     onCreated: WxEvent<(tab: WxTab) => void>;
   };

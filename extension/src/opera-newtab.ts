@@ -37,8 +37,22 @@ export async function onOperaTabCreated(tab: WxTab): Promise<void> {
 
   handled.add(tab.id);
   // view=start: kafelki niezaleznie od przelacznika nowej karty (to i tak decyzja tego przelacznika)
-  try { await wx.tabs.update(tab.id, { url: wx.runtime.getURL('newtab.html?view=start') }); }
-  catch { /* karta mogla zostac juz zamknieta */ }
+  const target = wx.runtime.getURL('newtab.html?view=start');
+  try {
+    if (settings.focusSearch) {
+      // Przekierowanie w tej samej karcie zostawia ostrosc w pasku adresu (Ctrl+T
+      // otworzyl karte z kursorem w pasku) i strona nie moze jej odebrac. Karta
+      // otwarta przez wtyczke z gotowym adresem dostaje ostrosc na stronie —
+      // wiec otwieramy nowa w tym samym miejscu i zamykamy Speed Dial.
+      const created = await wx.tabs.create({ url: target, active: true, windowId: tab.windowId,
+        ...(tab.index !== undefined ? { index: tab.index } : {}),
+        ...(tab.openerTabId !== undefined ? { openerTabId: tab.openerTabId } : {}) });
+      if (created.id !== undefined) handled.add(created.id);
+      await wx.tabs.remove(tab.id);
+    } else {
+      await wx.tabs.update(tab.id, { url: target });
+    }
+  } catch { /* karta mogla zostac juz zamknieta */ }
 }
 
 /** Rejestracja na najwyzszym poziomie tla — MV3 budzi worker tylko dla zarejestrowanych zdarzen. */

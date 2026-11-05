@@ -273,7 +273,7 @@ const listener = { addListener() {}, removeListener() {} };
   },
   alarms: { create() {}, get: async () => undefined, clear: async () => true, onAlarm: listener },
   action: { setIcon: noop, setTitle: noop, setBadgeText: noop, setBadgeBackgroundColor: noop },
-  tabs: { create: noop, update: noop, query: async () => [], onCreated: listener },
+  tabs: { create: async () => ({ id: 0, windowId: 0, incognito: false }), update: noop, remove: noop, query: async () => [], onCreated: listener },
   permissions: {
     contains: async (p: { permissions?: string[] }) =>
       p.permissions?.includes('topSites') ? current.topSitesGranted : true,

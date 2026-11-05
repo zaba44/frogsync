@@ -855,19 +855,24 @@ await scenario('Opera: nowa karta ze Speed Dialem przestawiona tylko gdy wolno',
   const d = new FakeDevice('Opera tabs', 'chromium');
   use(d);
   const b = (globalThis as any).browser;
-  const real = { update: b.tabs.update, query: b.tabs.query, contains: b.permissions.contains };
+  const real = { update: b.tabs.update, query: b.tabs.query, create: b.tabs.create, remove: b.tabs.remove, contains: b.permissions.contains };
+  // "updated" = karty Speed Dialu przejete (domyslnie: nowa karta + zamkniecie, z kursorem na stronie)
   const updated: number[] = [];
-  let tabsInWindow = 2, granted = true;
+  const created: { index?: number }[] = [];
+  let tabsInWindow = 2, granted = true, nextId = 900;
   b.tabs.update = async (id: number) => { updated.push(id); };
+  b.tabs.remove = async (id: number) => { updated.push(id); };
+  b.tabs.create = async (p: { index?: number }) => { created.push(p); return { id: nextId++, windowId: 1, incognito: false }; };
   b.tabs.query = async () => Array.from({ length: tabsInWindow }, (_, i) => ({ id: i, windowId: 1, incognito: false }));
   b.permissions.contains = async () => granted;
-  const tab = (id: number, url: string, incognito = false) => ({ id, windowId: 1, pendingUrl: url, incognito });
+  const tab = (id: number, url: string, incognito = false) => ({ id, windowId: 1, index: 3, pendingUrl: url, incognito });
   try {
     await onOperaTabCreated(tab(1, 'chrome://startpageshared/'));
     expect(updated.length === 0, 'przekierowano mimo wylaczonej opcji');
     await storage.setLocal({ [KEYS.settings]: { operaNewTab: true } });
     await onOperaTabCreated(tab(2, 'chrome://startpageshared/'));
-    expect(updated.join() === '2', 'nie przekierowano Speed Dialu');
+    expect(updated.join() === '2' && created.length === 1 && created[0].index === 3,
+      'Speed Dial nie zastapiony nowa karta w tym samym miejscu');
     await onOperaTabCreated(tab(2, 'chrome://startpageshared/'));
     expect(updated.join() === '2', 'ta sama karta przekierowana drugi raz');
     await onOperaTabCreated(tab(3, 'https://startpage.com/'));
@@ -875,8 +880,13 @@ await scenario('Opera: nowa karta ze Speed Dialem przestawiona tylko gdy wolno',
     tabsInWindow = 1; await onOperaTabCreated(tab(5, 'chrome://startpageshared/')); tabsInWindow = 2;
     granted = false; await onOperaTabCreated(tab(6, 'chrome://startpageshared/'));
     expect(updated.join() === '2', `przekierowano obca strone, okno prywatne, pierwsza karte albo bez zgody: ${updated}`);
+    // Bez opcji kursora: zwykle przekierowanie w tej samej karcie
+    granted = true;
+    await storage.setLocal({ [KEYS.settings]: { operaNewTab: true, focusSearch: false } });
+    await onOperaTabCreated(tab(7, 'chrome://startpageshared/'));
+    expect(updated.join() === '2,7' && created.length === 1, 'bez opcji kursora karta nie zostala przekierowana w miejscu');
   } finally {
-    Object.assign(b.tabs, { update: real.update, query: real.query });
+    Object.assign(b.tabs, { update: real.update, query: real.query, create: real.create, remove: real.remove });
     b.permissions.contains = real.contains;
   }
 });
