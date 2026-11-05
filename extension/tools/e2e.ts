@@ -493,6 +493,135 @@ await scenario('wersja aktualna: informacja o dostepnej aktualizacji znika bez z
   }
 });
 
+await scenario('tresc: lokalny tytul zmieniony podczas pull nie ginie przy zdalnej zmianie URL', async () => {
+  const a = await newBrowser('Content merge A', 'chromium', 'Scalanie tresci', device => {
+    add(device, 'Poczatkowy tytul', 'https://content-merge.example/old');
+  });
+  const b = await newBrowser('Content merge B', 'gecko', 'Scalanie tresci');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.update(b.bookmarks.find('Poczatkowy tytul')!.id,
+    { url: 'https://content-merge.example/new' });
+  await sync(b);
+
+  use(a);
+  const localId = a.bookmarks.find('Poczatkowy tytul')!.id;
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      a.bookmarks.update(localId, { title: 'Lokalny tytul podczas pull' });
+    }
+    return response;
+  };
+
+  try {
+    await sync(a);
+    const local = a.bookmarks.get(localId)[0];
+    expect(injected, 'nie wykonano edycji podczas pull');
+    expect(local.title === 'Lokalny tytul podczas pull' &&
+      local.url === 'https://content-merge.example/new',
+      'pull nadpisal lokalny tytul lub zgubil zdalny URL');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  await converge(a, b);
+  for (const device of [a, b]) {
+    const node = device.bookmarks.find('Lokalny tytul podczas pull');
+    expect(node?.url === 'https://content-merge.example/new',
+      `${device.name}: niezalezne zmiany nie zbiegly sie`);
+    expect(device.bookmarks.findAll(n => n.url === 'https://content-merge.example/new').length === 1,
+      `${device.name}: utworzono duplikat`);
+  }
+});
+
+await scenario('tresc: konflikt podczas pull zachowuje odrzucony tytul przed zastosowaniem serwera', async () => {
+  const a = await newBrowser('Content conflict A', 'chromium', 'Konflikt tresci', device => {
+    add(device, 'Baza tytulu', 'https://content-conflict.example/');
+  });
+  const b = await newBrowser('Content conflict B', 'gecko', 'Konflikt tresci');
+  await converge(a, b);
+
+  use(b);
+  b.bookmarks.update(b.bookmarks.find('Baza tytulu')!.id, { title: 'Tytul serwera' });
+  await sync(b);
+
+  use(a);
+  const localId = a.bookmarks.find('Baza tytulu')!.id;
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.includes('/api/v1/changes?')) {
+      injected = true;
+      a.bookmarks.update(localId, { title: 'Odrzucony lokalny tytul' });
+    }
+    return response;
+  };
+
+  try {
+    await sync(a);
+    expect(a.bookmarks.get(localId)[0].title === 'Tytul serwera',
+      'rzeczywisty konflikt nie zostal rozstrzygniety na rzecz serwera');
+
+    const notes = await conflictNotes();
+    const saved = notes.find(note => note.rejectedContent?.fields.some(field =>
+      field.field === 'title' && field.local === 'Odrzucony lokalny tytul'));
+    expect(saved?.rejectedContent, 'brak trwalej odrzuconej wartosci');
+    const field = saved.rejectedContent.fields.find(item => item.field === 'title')!;
+    expect(field.base === 'Baza tytulu' && field.remote === 'Tytul serwera',
+      'notatka nie zachowala bazy i wersji serwera');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  await converge(a, b);
+  use(a);
+  expect((await conflictNotes()).some(note => note.rejectedContent?.fields.some(field =>
+    field.local === 'Odrzucony lokalny tytul')), 'kolejny przebieg zgubil odrzucona wartosc');
+});
+
+await scenario('tresc: edycja po wyslaniu update zostaje lokalna zmiana do kolejnego przebiegu', async () => {
+  const a = await newBrowser('Content ack A', 'chromium', 'Edycja podczas odpowiedzi', device => {
+    add(device, 'Przed wyslaniem', 'https://content-ack.example/');
+  });
+  const b = await newBrowser('Content ack B', 'gecko', 'Edycja podczas odpowiedzi');
+  await converge(a, b);
+
+  use(a);
+  const localId = a.bookmarks.find('Przed wyslaniem')!.id;
+  a.bookmarks.update(localId, { title: 'Pierwsza edycja' });
+  const realFetch = globalThis.fetch;
+  let injected = false;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const response = await realFetch(input, init);
+    if (!injected && response.ok && url.endsWith('/api/v1/ops')) {
+      injected = true;
+      a.bookmarks.update(localId, { title: 'Druga edycja podczas odpowiedzi' });
+    }
+    return response;
+  };
+
+  try {
+    await sync(a);
+    expect(injected && a.bookmarks.get(localId)[0].title === 'Druga edycja podczas odpowiedzi',
+      'potwierdzenie pierwszej edycji nadpisalo druga');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  await converge(a, b);
+  expect(b.bookmarks.find('Druga edycja podczas odpowiedzi'),
+    'druga edycja nie wyszla zwyklym diffem');
+});
+
 await scenario('stan ustalony: kolejne przebiegi niczego nie wysylaja ani nie pobieraja', async () => {
   const [a, b] = pair('A1', 'B1');
   await converge(a, b);

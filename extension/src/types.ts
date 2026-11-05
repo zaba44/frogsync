@@ -89,11 +89,25 @@ export interface SyncStatus {
   blockedLocalDeletions?: number;
 }
 
+export interface RejectedContent {
+  nodeId: string;
+  generation: string;
+  remoteVersion: number;
+  fields: {
+    field: 'title' | 'url';
+    base: string | null;
+    local: string | null;
+    remote: string | null;
+  }[];
+}
+
 export interface ConflictNote {
   at: number;
   reason: string;
   title: string;
   outcome: string;
+  /** Odrzucona wartosc zostaje zapisana przed zmiana w przegladarce. */
+  rejectedContent?: RejectedContent;
 }
 
 export type Message =

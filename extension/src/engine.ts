@@ -1,5 +1,6 @@
 import { diff, type KnownNode, type LocalNode, type Mapping, type PlannedOp } from './core/diff.js';
 import { planReorder } from './core/reorder.js';
+import { mergeContent } from './core/merge-content.js';
 import { planBootstrap } from './core/bootstrap.js';
 import * as api from './api.js';
 import { getLocal, setLocal, KEYS } from './storage.js';
@@ -65,6 +66,10 @@ interface State {
   session: ServerSession;
   cursor: number;
   known: Record<string, KnownNode>;
+  /** Baza tresci sprzed przyjecia nowego stanu serwera; przezywa ponowienia. */
+  applyBases: Record<string, KnownNode>;
+  /** Bootstrap i reset sa jawnie autorytatywne takze po restarcie workera. */
+  authoritativeApply: string[];
   mapping: Mapping;
   outbox: (PlannedOp & { approved?: boolean })[];
   skipped: Record<string, { reason: string }>;
@@ -87,6 +92,7 @@ const EMPTY_STATE = {
   cursor: 0, known: {}, mapping: { s2l: {}, l2s: {} }, outbox: [], skipped: {}, rejectedLocal: {},
   conflicts: [], brake: {}, requireFull: false, reapply: [], attempts: {}, pendingFolders: [],
   pendingDeletes: [], approvedDeletes: [], bootstrap: null,
+  applyBases: {}, authoritativeApply: [],
 };
 
 async function loadState(): Promise<State | null> {
@@ -695,6 +701,8 @@ async function handleReset(s: State, generation: string): Promise<void> {
   });
   s.pendingDeletes = [];
   s.approvedDeletes = [];
+  s.applyBases = {};
+  s.authoritativeApply = [];
   s.reapply = [];
   s.pendingFolders = [];
   s.brake = {};
@@ -708,6 +716,19 @@ async function handleReset(s: State, generation: string): Promise<void> {
   await saveState(s);
 }
 
+function rememberApplyBase(s: State, base: KnownNode, acknowledged?: PlannedOp): void {
+  const expected = s.applyBases[base.id] ?? structuredClone(base);
+
+  // Gdy nasza edycja zostala potwierdzona, baza zawiera jej wartosc.
+  // Pozniejsza edycja uzytkownika jest wtedy nowa lokalna praca,
+  // a nie konfliktem z odpowiedzia na jego poprzednia operacje.
+  if (acknowledged?.type === 'update') {
+    if (acknowledged.title !== undefined) expected.title = acknowledged.title;
+    if (acknowledged.url !== undefined) expected.url = acknowledged.url;
+  }
+  s.applyBases[base.id] = expected;
+}
+
 function handleResult(s: State, op: PlannedOp, r: OpResult, followUps: PlannedOp[]): void {
   const titleOf = () => r.node?.title || op.title || s.known[op.nodeId]?.title || '(bez nazwy)';
   const note = (reason: string, outcome: string) => s.conflicts.push({ at: Date.now(), reason, title: titleOf(), outcome });
@@ -716,6 +737,10 @@ function handleResult(s: State, op: PlannedOp, r: OpResult, followUps: PlannedOp
   if (r.status === 'applied') {
     if (r.node?.deleted) { forget(s, op.nodeId); return; }
     if (!r.node) return;
+    const previous = s.known[r.node.id];
+    if (previous && (op.type === 'update' || op.type === 'move')) {
+      rememberApplyBase(s, previous, op);
+    }
     s.known[r.node.id] = toKnown(r.node);
     // Potwierdzenie niesie PELNY stan wezla — takze zmiany innej przegladarki
     // i miejsce nadane przez serwer (np. przy force: na koniec folderu).
@@ -941,6 +966,8 @@ async function applyNodes(s: State, live: ServerNode[], full: boolean): Promise<
     if (n.kind === 'root') continue;
     const prev = s.known[n.id];
     previous.set(n.id, prev);
+    if (prev) rememberApplyBase(s, prev);
+    if (full) addUnique(s.authoritativeApply, n.id);
     s.known[n.id] = toKnown(n);
     if (!prev || prev.order !== n.order || prev.parentId !== n.parentId || full) {
       if (n.parentId) addUnique(s.pendingFolders, n.parentId);
@@ -948,6 +975,8 @@ async function applyNodes(s: State, live: ServerNode[], full: boolean): Promise<
     }
     if (full || !prev || n.version > prev.version) addUnique(s.reapply, n.id);
   }
+  // Nowy known, stara baza i lista pracy trafiaja do jednego zapisu.
+  await saveState(s);
   await reconcile(s, [...previous.entries()], full);
 }
 
@@ -992,6 +1021,12 @@ async function reconcile(s: State, previousEntries: [string, KnownNode | undefin
       if (outcome === 'created') index = indexTree(await readRoots());
     }
     s.reapply = s.reapply.filter(id => !done.has(id) && s.known[id]);
+    for (const id of done) delete s.applyBases[id];
+    s.authoritativeApply = s.authoritativeApply.filter(id => !done.has(id));
+
+    // Mapowanie musi byc trwale przed usunieciem intencji tworzenia.
+    // Restart po tym zapisie odczyta mapowanie i rozliczy pozostala intencje.
+    await saveState(s);
     await saveIntents({});
 
     // Kolejnosc — minimalna liczba przesuniec
@@ -1031,6 +1066,7 @@ async function applyOne(
   s: State, k: KnownNode, index: Map<string, LocalNode>, intents: Record<string, Intent>,
   prev: KnownNode | undefined, full: boolean,
 ): Promise<Outcome> {
+  full ||= s.authoritativeApply.includes(k.id);
   if (k.kind === 'root' || !k.parentId) return 'ok';
   if (s.skipped[k.parentId]) return 'skip';   // rodzica nie da sie tu odtworzyc — dziecka tez
 
@@ -1038,7 +1074,8 @@ async function applyOne(
   if (!parentLocal || !(index.has(parentLocal) || (await exists(parentLocal)))) return 'retry';
 
   const localId = s.mapping.s2l[k.id];
-  const local = localId ? index.get(localId) ?? (await nodeFresh(localId)) : undefined;
+  // Indeks pochodzi sprzed innych operacji i mogl sie zdezaktualizowac.
+  const local = localId ? await nodeFresh(localId) : undefined;
 
   if (!local) {
     // Zmapowany, niezmieniony na serwerze, a lokalnie brak: uzytkownik wlasnie go usunal.
@@ -1064,10 +1101,36 @@ async function applyOne(
   }
 
   try {
-    const changes: { title?: string; url?: string } = {};
-    if (k.kind !== 'separator' && local.title !== k.title) changes.title = k.title;
-    if (k.kind === 'bookmark' && (local.url ?? null) !== k.url) changes.url = k.url ?? '';
-    await updateLocal(local.id, changes);
+    const base = s.applyBases[k.id] ?? prev;
+    const merged = mergeContent(
+      base,
+      { title: local.title, url: local.url ?? null },
+      { title: k.title, url: k.url },
+      { title: k.kind !== 'separator', url: k.kind === 'bookmark', authoritative: full },
+    );
+
+    if (merged.conflicts.length > 0) {
+      const rejectedContent = {
+        nodeId: k.id,
+        generation: s.session.generation,
+        remoteVersion: k.version,
+        fields: merged.conflicts,
+      };
+      const signature = JSON.stringify(rejectedContent);
+      if (!s.conflicts.some(note => JSON.stringify(note.rejectedContent) === signature)) {
+        s.conflicts.push({
+          at: Date.now(),
+          reason: 'content-changed',
+          title: local.title || '(bez nazwy)',
+          outcome: 'To samo pole zmieniono w obu przeglądarkach. Zastosowano wersję serwera; Twoją odrzuconą wartość zachowano.',
+          rejectedContent,
+        });
+      }
+      // Nie nadpisujemy odrzuconej wartosci, dopoki nie ma trwalej kopii.
+      await saveState(s);
+    }
+
+    await updateLocal(local.id, merged.changes);
 
     if (local.parentId !== parentLocal) {
       await moveToFolderEnd(local.id, parentLocal);
@@ -1162,6 +1225,8 @@ function forget(s: State, sid: string): void {
   delete s.known[sid];
   delete s.skipped[sid];
   delete s.attempts[sid];
+  delete s.applyBases[sid];
+  s.authoritativeApply = s.authoritativeApply.filter(id => id !== sid);
   s.reapply = s.reapply.filter(x => x !== sid);
   s.pendingDeletes = s.pendingDeletes.filter(x => x !== sid);
   s.approvedDeletes = s.approvedDeletes.filter(x => x !== sid);
