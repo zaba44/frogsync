@@ -113,7 +113,7 @@ async function profile(name: string): Promise<string> {
 
 async function newBrowser(name: string, engine: 'gecko' | 'chromium', profileName: string,
   setup?: (d: FakeDevice) => void, mode: 'replace' | 'merge' = 'replace',
-  options: { braveIds?: boolean } = {}): Promise<FakeDevice> {
+  options: { braveIds?: boolean; noMobile?: boolean } = {}): Promise<FakeDevice> {
   const device = new FakeDevice(name, engine, options);
   created.push(device);
   use(device);
@@ -804,6 +804,27 @@ await scenario('konflikt: przywrocenie zapisanej tresci jest trwale i idempotent
   const before = (await api.hello(session)).head;
   await engine.restoreConflict(id);
   expect((await api.hello(session)).head === before, 'drugie klikniecie wykonalo druga operacje');
+});
+
+await scenario('Opera bez korzenia mobilnego: wpis z "Zakladek mobilnych" nie blokuje wysylki', async () => {
+  const a = await newBrowser('Mobile src', 'gecko', 'Mobilne', d => { use(d); add(d, 'Start', 'https://start-mobile.example/'); });
+  const b = await newBrowser('Opera bez mobile', 'chromium', 'Mobilne', undefined, 'replace', { noMobile: true });
+  await converge(a, b);
+
+  use(a);
+  a.bookmarks.create({ parentId: 'mobile______', title: 'Z telefonu', url: 'https://z-telefonu.example/' });
+  await converge(a, b);
+  expect(!b.bookmarks.find('Z telefonu'), 'Opera bez korzenia mobilnego nie powinna miec gdzie polozyc wpisu');
+
+  use(b); add(b, 'Z Opery po mobilnym', 'https://z-opery-mobile.example/');
+  await converge(b, a);
+  expect(a.bookmarks.find('Z Opery po mobilnym'), 'Opera przestala wysylac zmiany po wpisie w korzeniu mobilnym');
+
+  use(a); a.bookmarks.create({ parentId: 'mobile______', title: 'Drugi z telefonu', url: 'https://z-telefonu-2.example/' });
+  await converge(a, b);
+  use(b); add(b, 'Z Opery drugi raz', 'https://z-opery-mobile-2.example/');
+  await converge(b, a);
+  expect(a.bookmarks.find('Z Opery drugi raz'), 'drugi wpis mobilny znow zablokowal wysylke');
 });
 
 await scenario('Brave: korzenie o innych numerach (1, 368, 369) synchronizuja sie poprawnie', async () => {

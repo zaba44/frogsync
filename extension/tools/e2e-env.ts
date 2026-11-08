@@ -64,7 +64,7 @@ class FakeBookmarks {
   /** Identyfikatory korzeni Chromium: Chrome/Edge/Opera 1-2-3, Brave np. 1-368-369. */
   private readonly chromiumIds: [string, string, string];
 
-  constructor(readonly engine: Engine, options: { braveIds?: boolean } = {}) {
+  constructor(readonly engine: Engine, options: { braveIds?: boolean; noMobile?: boolean } = {}) {
     this.chromiumIds = options.braveIds ? ['1', '368', '369'] : ['1', '2', '3'];
     if (options.braveIds) this.next = 1000;   // nowe wpisy nie moga trafic na 368/369
     const root: Node = { id: engine === 'gecko' ? 'root________' : '0', title: '', type: 'folder', dateAdded: 0, children: [] };
@@ -72,7 +72,8 @@ class FakeBookmarks {
     const [bar, other, mobile] = this.chromiumIds;
     const specials = engine === 'gecko'
       ? [['menu________', 'Menu zakładek'], ['toolbar_____', 'Pasek zakładek'], ['unfiled_____', 'Inne zakładki'], ['mobile______', 'Zakładki z telefonu']]
-      : [[bar, 'Pasek zakładek'], [other, 'Inne zakładki'], [mobile, 'Zakładki na telefonie']];
+      : [[bar, 'Pasek zakładek'], [other, 'Inne zakładki'], [mobile, 'Zakładki na telefonie']]
+          .filter(([id]) => !(options.noMobile && id === mobile));   // Opera nie ma korzenia mobilnego
     for (const [id, title] of specials) {
       const node: Node = { id, parentId: root.id, title, type: 'folder', dateAdded: 0, children: [] };
       this.nodes.set(id, node);
@@ -224,7 +225,7 @@ export class FakeDevice {
   readonly bookmarks: FakeBookmarks;
   readonly local = new FakeArea();
   readonly session = new FakeArea();
-  constructor(readonly name: string, readonly engine: Engine, options: { braveIds?: boolean } = {}) { this.bookmarks = new FakeBookmarks(engine, options); }
+  constructor(readonly name: string, readonly engine: Engine, options: { braveIds?: boolean; noMobile?: boolean } = {}) { this.bookmarks = new FakeBookmarks(engine, options); }
 }
 
 let current = new FakeDevice('start', 'gecko');

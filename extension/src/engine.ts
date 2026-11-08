@@ -1412,7 +1412,10 @@ async function reconcile(s: State, previousEntries: [string, KnownNode | undefin
     for (const serverFolder of [...s.pendingFolders]) {
       const localFolder = s.mapping.s2l[serverFolder];
       if (!localFolder || !(await exists(localFolder))) {
-        if (!s.known[serverFolder] && !serverFolder.startsWith('root:')) {
+        // Korzen, ktorego ta przegladarka nie ma (np. "Zakladki mobilne" w Operze),
+        // nie powstanie nigdy — zadanie konczymy, inaczej idle() blokowaloby wysylke na zawsze.
+        // Zwykly folder znany serwerowi zostaje: odtworzy go reapply.
+        if (serverFolder.startsWith('root:') || !s.known[serverFolder]) {
           finished.add(serverFolder);
           delete s.orderWork[serverFolder];
         }
